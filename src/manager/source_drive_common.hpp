@@ -86,6 +86,8 @@ public:
         // ROS related
         YamlRead<bool>(       config["ros"], "send_packet_ros",            driver_param.input_param.send_packet_ros, false);
         YamlRead<bool>(       config["ros"], "send_point_cloud_ros",       driver_param.input_param.send_point_cloud_ros, false);
+        YamlRead<bool>(       config["ros"], "send_intensity_img_ros",     driver_param.input_param.send_intensity_img_ros, false);
+        YamlRead<bool>(       config["ros"], "send_depth_img_ros",         driver_param.input_param.send_depth_img_ros, false);
         YamlRead<bool>(       config["ros"], "send_imu_ros",               driver_param.input_param.send_imu_ros, false);
         YamlRead<std::string>(config["ros"], "ros_frame_id",               driver_param.input_param.frame_id, "hesai_lidar");
         YamlRead<std::string>(config["ros"], "ros_send_packet_topic",      driver_param.input_param.ros_send_packet_topic, "hesai_packets");
