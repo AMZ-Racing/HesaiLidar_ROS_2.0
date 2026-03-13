@@ -29,7 +29,7 @@ lidar:
         caFile: ""                                    # Represents the path of the CA certificate 
 
       pcap_type:
-        pcap_path: "Your pcap file"                         # The path of pcap file
+        pcap_path: "/workspace/data/outputAT128.pcap"                         # The path of pcap file
         correction_file_path: "Your correction file path"   # The path of correction file
         firetimes_path: "Your firetime file path"           # The path of firetimes file
 
@@ -83,6 +83,8 @@ lidar:
       ros_send_point_cloud_topic: /lidar_points       # Topic used to send point cloud through ROS
       ros_send_imu_topic: /lidar_imu                  # Topic used to send lidar imu message
       ros_send_packet_loss_topic: /lidar_packets_loss # Topic used to monitor packets loss condition through ROS
+      ros_send_depth_image_topic: /lidar_depth_image   # Topic used to send depth image through ROS
+      ros_send_intensity_image_topic: /lidar_intensity_image # Topic used to send intensity image through ROS
       # ros_recv_correction_topic: /lidar_corrections # Topic used to receive corrections file from rosbag
       # ros_send_correction_topic: /lidar_corrections # Topic used to send correction through ROS
       # ros_send_firetime_topic: /lidar_firetime
@@ -90,3 +92,5 @@ lidar:
       send_packet_ros: false                          # true: Send packets through ROS 
       send_point_cloud_ros: true                      # true: Send point cloud through ROS    
       send_imu_ros: true                              # true: Send imu through ROS    
+      send_intensity_image_ros: true                 # true: Send intensity image through ROS    
+      send_depth_image_ros: true                     # true: Send depth image through ROS

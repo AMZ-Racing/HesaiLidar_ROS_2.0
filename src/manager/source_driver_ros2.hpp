@@ -31,6 +31,7 @@
 #pragma once
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/point_cloud2_iterator.hpp>
+#include <sensor_msgs/msg/image.hpp>
 #include <std_msgs/msg/u_int8_multi_array.hpp>
 #include <sensor_msgs/msg/imu.hpp>
 #include <sstream>
@@ -72,9 +73,10 @@ protected:
   void SendPointCloud(const LidarDecodedFrame<LidarPointXYZIRT>& msg);
   // Used to publish the original pcake through 'ros_send_packet_topic'
   void SendPacket(const UdpFrame_t&  ros_msg, double timestamp);
-  
-
+  // Used to publish depth image data through 'ros_send_depth_image_topic'
   void SendDepthImg(const LidarDecodedFrame<LidarPointXYZIRT>& msg);
+  // Used to publish intensity image data through 'ros_send_intensity_image_topic'
+  void SendIntensityImg(const LidarDecodedFrame<LidarPointXYZIRT>& msg);
 
   // Used to publish the Correction file through 'ros_send_correction_topic'
   void SendCorrection(const u8Array_t& msg);
@@ -102,9 +104,9 @@ protected:
   // Convert imu, imu into ROS message
   sensor_msgs::msg::Imu ToRosMsg(const LidarImuData& firetime_correction_);
 
-  sensor_msgs::msg::Image ToRosDepthImgMsg(const cv::Mat& depth_img, const std_msgs::msg::Header& header);
+  sensor_msgs::msg::Image ToRosDepthImgMsg(const LidarDecodedFrame<LidarPointXYZIRT>& frame, const std::string& frame_id);
 
-  sensor_msgs::msg::Image ToRosIntensityImgMsg(const cv::Mat& intensity_img, const std_msgs::msg::Header& header);
+  sensor_msgs::msg::Image ToRosIntensityImgMsg(const LidarDecodedFrame<LidarPointXYZIRT>& frame, const std::string& frame_id);
   
   // Convert Linear Acceleration from g to m/s^2
   double From_g_To_ms2(double g);
@@ -141,12 +143,12 @@ inline void SourceDriver::Init(const YAML::Node& config)
   if (driver_param.input_param.send_imu_ros) {
     imu_pub_ = node_ptr_->create_publisher<sensor_msgs::msg::Imu>(driver_param.input_param.ros_send_imu_topic, 10);
   }
-  if (driver_param.input_param.send_depth_img_ros) {
-    depth_img_pub_ = node_ptr_->create_publisher<sensor_msgs::msg::Image>(driver_param.input_param.ros_send_depth_img_topic, 10);
-  }
-  if (driver_param.input_param.send_intensity_img_ros) {
-    intensity_img_pub_ = node_ptr_->create_publisher<sensor_msgs::msg::Image>(driver_param.input_param.ros_send_intensity_img_topic, 10);
-  }
+  // if (driver_param.input_param.send_depth_image_ros) {
+  //   depth_img_pub_ = node_ptr_->create_publisher<sensor_msgs::msg::Image>(driver_param.input_param.ros_send_depth_image_topic, 10);
+  // }
+  // if (driver_param.input_param.send_intensity_image_ros) {
+  //   intensity_img_pub_ = node_ptr_->create_publisher<sensor_msgs::msg::Image>(driver_param.input_param.ros_send_intensity_image_topic, 10);
+  // }
 
   if (driver_param.input_param.ros_send_packet_loss_topic != NULL_TOPIC) {
     loss_pub_ = node_ptr_->create_publisher<hesai_ros_driver::msg::LossPacket>(driver_param.input_param.ros_send_packet_loss_topic, 10);
@@ -189,6 +191,16 @@ inline void SourceDriver::Init(const YAML::Node& config)
       this->SendPointCloud(frame);  
     });  
   }
+  // if (driver_param.input_param.send_depth_image_ros) {
+  //   driver_ptr_->RegRecvCallback([this](const hesai::lidar::LidarDecodedFrame<hesai::lidar::LidarPointXYZIRT>& frame) {  
+  //     this->SendDepthImg(frame);  
+  //   });  
+  // }
+  // if (driver_param.input_param.send_intensity_image_ros) {
+  //   driver_ptr_->RegRecvCallback([this](const hesai::lidar::LidarDecodedFrame<hesai::lidar::LidarPointXYZIRT>& frame) {  
+  //     this->SendIntensityImg(frame);  
+  //   });  
+  // }
   if (driver_param.input_param.send_imu_ros) {
     driver_ptr_->RegRecvCallback(std::bind(&SourceDriver::SendImuConfig, this, std::placeholders::_1));
   }
@@ -240,12 +252,12 @@ inline void SourceDriver::SendPointCloud(const LidarDecodedFrame<LidarPointXYZIR
 
 inline void SourceDriver::SendDepthImg(const LidarDecodedFrame<LidarPointXYZIRT>& msg)
 {
-  depth_img_pub_->publish(ToRosDepthImgMsg(msg.depth_img, msg.header));
+  depth_img_pub_->publish(ToRosDepthImgMsg(msg, frame_id_));
 }
 
 inline void SourceDriver::SendIntensityImg(const LidarDecodedFrame<LidarPointXYZIRT>& msg)
 {
-  intensity_img_pub_->publish(ToRosIntensityImgMsg(msg.intensity_img, msg.header));
+  intensity_img_pub_->publish(ToRosDepthImgMsg(msg, frame_id_)); // HOTFIX: change to correct function
 }
 
 inline void SourceDriver::SendCorrection(const u8Array_t &msg)
@@ -341,21 +353,25 @@ inline sensor_msgs::msg::PointCloud2 SourceDriver::ToRosMsg(const LidarDecodedFr
 // Maybe try to keep ToRosMsg 
 inline sensor_msgs::msg::Image SourceDriver::ToRosDepthImgMsg(const LidarDecodedFrame<LidarPointXYZIRT>& frame, const std::string& frame_id)
 {
-  sensor_msgs::msg::PointCloud2 ros_msg;
+  sensor_msgs::msg::Image ros_msg;
   // Depthimage *pImage = (frame.fParam.IsMultiFrameFrequency() == 0) ? frame.points : frame.multi_points;
   int frame_index = (frame.fParam.IsMultiFrameFrequency() == 0) ? frame.frame_index : frame.multi_frame_index;
   double frame_start_timestamp = (frame.fParam.IsMultiFrameFrequency() == 0) ? frame.frame_start_timestamp : frame.multi_frame_start_timestamp;
   double frame_end_timestamp = (frame.fParam.IsMultiFrameFrequency() == 0) ? frame.frame_end_timestamp : frame.multi_frame_end_timestamp;
   const char *prefix = (frame.fParam.IsMultiFrameFrequency() == 0) ? "raw" : "multi";
-  ros_msg.fields.clear();
-  ros_msg.width = points_number; 
-  ros_msg.height = 1; 
+  // ros_msg.fields.clear();
 
-  int offset = 0;
-  // TODO MK: Some code for depth image conversion
+  // Depth image conversion
+  auto depth_image = frame.depth_img;
+  ros_msg.height = static_cast<uint32_t>(depth_image.rows);
+  ros_msg.width = static_cast<uint32_t>(depth_image.cols);
+  ros_msg.step = ros_msg.width * static_cast<uint32_t>(sizeof(float));
+  ros_msg.encoding = "32FC1";
+  ros_msg.is_bigendian = false;
+  ros_msg.data.resize(static_cast<size_t>(ros_msg.height) * ros_msg.step);
 
   // printf("HesaiLidar Runing Status [standby mode:%u]  |  [speed:%u]\n", frame.work_mode, frame.spin_speed);
-  printf("%s frame:%d points:%u packet:%d start time:%lf end time:%lf\n", prefix, frame_index, points_number, packet_number, frame_start_timestamp, frame_end_timestamp) ;
+  printf("%s frame:%d start time:%lf end time:%lf\n", prefix, frame_index, frame_start_timestamp, frame_end_timestamp) ;
   std::cout.flush();
   auto sec = (uint64_t)floor(frame_start_timestamp);
   if (sec <= std::numeric_limits<int32_t>::max()) {
@@ -370,19 +386,26 @@ inline sensor_msgs::msg::Image SourceDriver::ToRosDepthImgMsg(const LidarDecoded
 
 inline sensor_msgs::msg::Image SourceDriver::ToRosIntensityImgMsg(const LidarDecodedFrame<LidarPointXYZIRT>& frame, const std::string& frame_id)
 {
-  sensor_msgs::msg::PointCloud2 ros_msg;
+  sensor_msgs::msg::Image ros_msg;
   // Intensityimage *pImage = (frame.fParam.IsMultiFrameFrequency() == 0) ? frame.points : frame.multi_points;
   int frame_index = (frame.fParam.IsMultiFrameFrequency() == 0) ? frame.frame_index : frame.multi_frame_index;
   double frame_start_timestamp = (frame.fParam.IsMultiFrameFrequency() == 0) ? frame.frame_start_timestamp : frame.multi_frame_start_timestamp;
   double frame_end_timestamp = (frame.fParam.IsMultiFrameFrequency() == 0) ? frame.frame_end_timestamp : frame.multi_frame_end_timestamp;
   const char *prefix = (frame.fParam.IsMultiFrameFrequency() == 0) ? "raw" : "multi";
-  ros_msg.fields.clear();
-  ros_msg.width = points_number; 
-  ros_msg.height = 1; 
+  // ros_msg.fields.clear();
 
-  int offset = 0;
-  // TODO MK: Some code for intensity image conversion
-  
+  // Intensity image conversion
+  auto intensity_image = frame.intensity_img;
+  ros_msg.height = static_cast<uint32_t>(intensity_image.rows);
+  ros_msg.width = static_cast<uint32_t>(intensity_image.cols);
+  ros_msg.step = ros_msg.width * static_cast<uint32_t>(sizeof(float));
+  ros_msg.encoding = "32FC1";
+  ros_msg.is_bigendian = false;
+  ros_msg.data.resize(static_cast<size_t>(ros_msg.height) * ros_msg.step);
+
+  int packet_number = (frame.fParam.IsMultiFrameFrequency() == 0) ? frame.packet_num : frame.multi_packet_num;
+  int points_number = (frame.fParam.IsMultiFrameFrequency() == 0) ? frame.points_num : frame.multi_points_num;
+
   // printf("HesaiLidar Runing Status [standby mode:%u]  |  [speed:%u]\n", frame.work_mode, frame.spin_speed);
   printf("%s frame:%d points:%u packet:%d start time:%lf end time:%lf\n", prefix, frame_index, points_number, packet_number, frame_start_timestamp, frame_end_timestamp) ;
   std::cout.flush();
