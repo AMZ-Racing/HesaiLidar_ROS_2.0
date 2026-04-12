@@ -11,11 +11,11 @@ def generate_launch_description():
             node_executable='hesai_ros_driver_node',
             output='screen'
         ),
-        Node(
-            package='rviz2',
-            node_namespace='rviz2',
-            node_name='rviz2',
-            node_executable='rviz2',
-            arguments=['-d',rviz_config]
-        )
+        # Node(
+        #     package='rviz2',
+        #     node_namespace='rviz2',
+        #     node_name='rviz2',
+        #     node_executable='rviz2',
+        #     arguments=['-d',rviz_config]
+        # )
     ])
