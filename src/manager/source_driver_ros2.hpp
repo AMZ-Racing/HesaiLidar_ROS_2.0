@@ -47,6 +47,7 @@
 #include <string>
 #include <functional>
 #include <algorithm>
+#include <opencv2/imgproc.hpp>
 #include <boost/thread.hpp>
 #include "source_drive_common.hpp"
 
@@ -108,12 +109,22 @@ protected:
   sensor_msgs::msg::Image ToRosDepthImgMsg(const LidarDecodedFrame<LidarPointXYZIRT>& frame, const std::string& frame_id);
 
   sensor_msgs::msg::Image ToRosIntensityImgMsg(const LidarDecodedFrame<LidarPointXYZIRT>& frame, const std::string& frame_id);
+
+  void PostProcessDepthImage(cv::Mat& depth_image) const;
+  void PostProcessIntensityImage(cv::Mat& intensity_image, const cv::Mat& depth_image_ref) const;
   
   // Convert Linear Acceleration from g to m/s^2
   double From_g_To_ms2(double g);
   // Convert Angular Velocity from degree/s to radian/s
   double From_degs_To_rads(double degree);
   std::string frame_id_;
+  bool image_flip_vertical_ = true;
+  bool image_postprocess_enable_ = false;
+  bool image_interpolation_enable_ = true;
+  int image_interpolation_iterations_ = 1;
+  int image_interpolation_kernel_size_ = 3;
+  bool image_smoothing_enable_ = false;
+  int image_smoothing_kernel_size_ = 3;
 
   rclcpp::Subscription<std_msgs::msg::UInt8MultiArray>::SharedPtr crt_sub_;
   rclcpp::Subscription<hesai_ros_driver::msg::UdpFrame>::SharedPtr pkt_sub_;
@@ -190,6 +201,24 @@ inline void SourceDriver::Init(const YAML::Node& config)
   const bool send_point_cloud_ros = driver_param.input_param.send_point_cloud_ros;
   const bool send_depth_image_ros = driver_param.input_param.send_depth_image_ros;
   const bool send_intensity_image_ros = driver_param.input_param.send_intensity_image_ros;
+  YamlRead<bool>(config["ros"], "image_flip_vertical", image_flip_vertical_, true);
+  YamlRead<bool>(config["ros"], "image_postprocess_enable", image_postprocess_enable_, false);
+  YamlRead<bool>(config["ros"], "image_interpolation_enable", image_interpolation_enable_, true);
+  YamlRead<int>(config["ros"], "image_interpolation_iterations", image_interpolation_iterations_, 1);
+  YamlRead<int>(config["ros"], "image_interpolation_kernel_size", image_interpolation_kernel_size_, 3);
+  YamlRead<bool>(config["ros"], "image_smoothing_enable", image_smoothing_enable_, false);
+  YamlRead<int>(config["ros"], "image_smoothing_kernel_size", image_smoothing_kernel_size_, 3);
+
+  image_interpolation_iterations_ = std::max(0, image_interpolation_iterations_);
+  image_interpolation_kernel_size_ = std::max(1, image_interpolation_kernel_size_);
+  if ((image_interpolation_kernel_size_ % 2) == 0) {
+    image_interpolation_kernel_size_ += 1;
+  }
+  image_smoothing_kernel_size_ = std::max(1, image_smoothing_kernel_size_);
+  if ((image_smoothing_kernel_size_ % 2) == 0) {
+    image_smoothing_kernel_size_ += 1;
+  }
+
   if (send_depth_image_ros || send_intensity_image_ros) {
     // Depth/intensity image buffers are produced only when remake mode is enabled.
     auto& remake_cfg = driver_param.decoder_param.remake_config;
@@ -380,6 +409,7 @@ inline sensor_msgs::msg::Image SourceDriver::ToRosDepthImgMsg(const LidarDecoded
 
   // Depth image conversion
   auto depth_image = frame.depth_img;
+  PostProcessDepthImage(depth_image);
   ros_msg.height = static_cast<uint32_t>(depth_image.rows);
   ros_msg.width = static_cast<uint32_t>(depth_image.cols);
   ros_msg.step = ros_msg.width * static_cast<uint32_t>(sizeof(float));
@@ -389,7 +419,7 @@ inline sensor_msgs::msg::Image SourceDriver::ToRosDepthImgMsg(const LidarDecoded
   if (!depth_image.empty() && ros_msg.width > 0) {
     const size_t row_bytes = static_cast<size_t>(ros_msg.step);
     for (uint32_t out_row = 0; out_row < ros_msg.height; ++out_row) {
-      uint32_t src_row = ros_msg.height - 1 - out_row;
+      uint32_t src_row = image_flip_vertical_ ? (ros_msg.height - 1 - out_row) : out_row;
       const uint8_t* src_ptr = reinterpret_cast<const uint8_t*>(depth_image.ptr(static_cast<int>(src_row)));
       memcpy(ros_msg.data.data() + static_cast<size_t>(out_row) * row_bytes, src_ptr, row_bytes);
     }
@@ -421,6 +451,7 @@ inline sensor_msgs::msg::Image SourceDriver::ToRosIntensityImgMsg(const LidarDec
 
   // Intensity image conversion
   auto intensity_image = frame.intensity_img;
+  PostProcessIntensityImage(intensity_image, frame.depth_img);
   ros_msg.height = static_cast<uint32_t>(intensity_image.rows);
   ros_msg.width = static_cast<uint32_t>(intensity_image.cols);
   ros_msg.step = ros_msg.width;
@@ -430,7 +461,7 @@ inline sensor_msgs::msg::Image SourceDriver::ToRosIntensityImgMsg(const LidarDec
   if (!intensity_image.empty() && ros_msg.width > 0) {
     const size_t row_bytes = static_cast<size_t>(ros_msg.step);
     for (uint32_t out_row = 0; out_row < ros_msg.height; ++out_row) {
-      uint32_t src_row = ros_msg.height - 1 - out_row;
+      uint32_t src_row = image_flip_vertical_ ? (ros_msg.height - 1 - out_row) : out_row;
       const uint8_t* src_ptr = intensity_image.ptr(static_cast<int>(src_row));
       memcpy(ros_msg.data.data() + static_cast<size_t>(out_row) * row_bytes, src_ptr, row_bytes);
     }
@@ -451,6 +482,106 @@ inline sensor_msgs::msg::Image SourceDriver::ToRosIntensityImgMsg(const LidarDec
   }
   ros_msg.header.frame_id = frame_id_;
   return ros_msg;
+}
+
+inline void SourceDriver::PostProcessDepthImage(cv::Mat& depth_image) const
+{
+  if (depth_image.empty() || depth_image.type() != CV_32FC1) {
+    return;
+  }
+
+  if (image_postprocess_enable_ && image_interpolation_enable_ && image_interpolation_iterations_ > 0) {
+    cv::Mat valid_mask = depth_image > 0.0f;
+    cv::Mat valid_float;
+    cv::Mat depth_sum;
+    cv::Mat valid_count;
+    cv::Mat missing_mask;
+    cv::Mat fillable_mask;
+    cv::Mat depth_avg;
+    const cv::Size kernel(image_interpolation_kernel_size_, image_interpolation_kernel_size_);
+
+    for (int iter = 0; iter < image_interpolation_iterations_; ++iter) {
+      valid_mask.convertTo(valid_float, CV_32F, 1.0 / 255.0);
+      cv::boxFilter(depth_image, depth_sum, CV_32F, kernel, cv::Point(-1, -1), true, cv::BORDER_REPLICATE);
+      cv::boxFilter(valid_float, valid_count, CV_32F, kernel, cv::Point(-1, -1), true, cv::BORDER_REPLICATE);
+
+      cv::compare(valid_mask, 0, missing_mask, cv::CMP_EQ);
+      cv::compare(valid_count, 0.0f, fillable_mask, cv::CMP_GT);
+      cv::bitwise_and(missing_mask, fillable_mask, fillable_mask);
+
+      if (cv::countNonZero(fillable_mask) == 0) {
+        break;
+      }
+
+      cv::divide(depth_sum, valid_count + 1e-6f, depth_avg);
+      depth_avg.copyTo(depth_image, fillable_mask);
+      valid_mask.setTo(255, fillable_mask);
+    }
+  }
+
+  if (image_postprocess_enable_ && image_smoothing_enable_ && image_smoothing_kernel_size_ > 1) {
+    cv::GaussianBlur(depth_image,
+                     depth_image,
+                     cv::Size(image_smoothing_kernel_size_, image_smoothing_kernel_size_),
+                     0.0,
+                     0.0,
+                     cv::BORDER_REPLICATE);
+  }
+}
+
+inline void SourceDriver::PostProcessIntensityImage(cv::Mat& intensity_image, const cv::Mat& depth_image_ref) const
+{
+  if (intensity_image.empty() || intensity_image.type() != CV_8UC1) {
+    return;
+  }
+
+  if (image_postprocess_enable_ && image_interpolation_enable_ && image_interpolation_iterations_ > 0) {
+    cv::Mat valid_mask;
+    if (!depth_image_ref.empty() && depth_image_ref.type() == CV_32FC1 && depth_image_ref.size() == intensity_image.size()) {
+      valid_mask = depth_image_ref > 0.0f;
+    } else {
+      valid_mask = intensity_image > 0;
+    }
+
+    cv::Mat intensity_float;
+    intensity_image.convertTo(intensity_float, CV_32F);
+    cv::Mat valid_float;
+    cv::Mat intensity_sum;
+    cv::Mat valid_count;
+    cv::Mat missing_mask;
+    cv::Mat fillable_mask;
+    cv::Mat intensity_avg;
+    const cv::Size kernel(image_interpolation_kernel_size_, image_interpolation_kernel_size_);
+
+    for (int iter = 0; iter < image_interpolation_iterations_; ++iter) {
+      valid_mask.convertTo(valid_float, CV_32F, 1.0 / 255.0);
+      cv::boxFilter(intensity_float, intensity_sum, CV_32F, kernel, cv::Point(-1, -1), true, cv::BORDER_REPLICATE);
+      cv::boxFilter(valid_float, valid_count, CV_32F, kernel, cv::Point(-1, -1), true, cv::BORDER_REPLICATE);
+
+      cv::compare(valid_mask, 0, missing_mask, cv::CMP_EQ);
+      cv::compare(valid_count, 0.0f, fillable_mask, cv::CMP_GT);
+      cv::bitwise_and(missing_mask, fillable_mask, fillable_mask);
+
+      if (cv::countNonZero(fillable_mask) == 0) {
+        break;
+      }
+
+      cv::divide(intensity_sum, valid_count + 1e-6f, intensity_avg);
+      intensity_avg.copyTo(intensity_float, fillable_mask);
+      valid_mask.setTo(255, fillable_mask);
+    }
+
+    intensity_float.convertTo(intensity_image, CV_8U);
+  }
+
+  if (image_postprocess_enable_ && image_smoothing_enable_ && image_smoothing_kernel_size_ > 1) {
+    cv::GaussianBlur(intensity_image,
+                     intensity_image,
+                     cv::Size(image_smoothing_kernel_size_, image_smoothing_kernel_size_),
+                     0.0,
+                     0.0,
+                     cv::BORDER_REPLICATE);
+  }
 }
 
 
