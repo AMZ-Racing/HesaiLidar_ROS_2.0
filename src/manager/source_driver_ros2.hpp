@@ -46,6 +46,7 @@
 #include <chrono>
 #include <string>
 #include <functional>
+#include <algorithm>
 #include <boost/thread.hpp>
 #include "source_drive_common.hpp"
 
@@ -189,6 +190,20 @@ inline void SourceDriver::Init(const YAML::Node& config)
   const bool send_point_cloud_ros = driver_param.input_param.send_point_cloud_ros;
   const bool send_depth_image_ros = driver_param.input_param.send_depth_image_ros;
   const bool send_intensity_image_ros = driver_param.input_param.send_intensity_image_ros;
+  if (send_depth_image_ros || send_intensity_image_ros) {
+    // Depth/intensity image buffers are produced only when remake mode is enabled.
+    auto& remake_cfg = driver_param.decoder_param.remake_config;
+    remake_cfg.flag = true;
+
+    // Build image width from configured FOV directly in remake space.
+    if (driver_param.decoder_param.fov_start != -1 &&
+        driver_param.decoder_param.fov_end != -1 &&
+        driver_param.decoder_param.fov_end > driver_param.decoder_param.fov_start) {
+      remake_cfg.min_azi = static_cast<float>(driver_param.decoder_param.fov_start);
+      remake_cfg.max_azi = static_cast<float>(driver_param.decoder_param.fov_end);
+      remake_cfg.max_azi_scan = -1;
+    }
+  }
   if (send_point_cloud_ros || send_depth_image_ros || send_intensity_image_ros) {
     driver_ptr_->RegRecvCallback([this, send_point_cloud_ros, send_depth_image_ros, send_intensity_image_ros](
                                     const hesai::lidar::LidarDecodedFrame<hesai::lidar::LidarPointXYZIRT>& frame) {
@@ -371,6 +386,14 @@ inline sensor_msgs::msg::Image SourceDriver::ToRosDepthImgMsg(const LidarDecoded
   ros_msg.encoding = "32FC1";
   ros_msg.is_bigendian = false;
   ros_msg.data.resize(static_cast<size_t>(ros_msg.height) * ros_msg.step);
+  if (!depth_image.empty() && ros_msg.width > 0) {
+    const size_t row_bytes = static_cast<size_t>(ros_msg.step);
+    for (uint32_t out_row = 0; out_row < ros_msg.height; ++out_row) {
+      uint32_t src_row = ros_msg.height - 1 - out_row;
+      const uint8_t* src_ptr = reinterpret_cast<const uint8_t*>(depth_image.ptr(static_cast<int>(src_row)));
+      memcpy(ros_msg.data.data() + static_cast<size_t>(out_row) * row_bytes, src_ptr, row_bytes);
+    }
+  }
 
   // printf("HesaiLidar Runing Status [standby mode:%u]  |  [speed:%u]\n", frame.work_mode, frame.spin_speed);
   printf("%s frame:%d start time:%lf end time:%lf\n", prefix, frame_index, frame_start_timestamp, frame_end_timestamp) ;
@@ -400,10 +423,18 @@ inline sensor_msgs::msg::Image SourceDriver::ToRosIntensityImgMsg(const LidarDec
   auto intensity_image = frame.intensity_img;
   ros_msg.height = static_cast<uint32_t>(intensity_image.rows);
   ros_msg.width = static_cast<uint32_t>(intensity_image.cols);
-  ros_msg.step = ros_msg.width * static_cast<uint32_t>(sizeof(float));
-  ros_msg.encoding = "32FC1";
+  ros_msg.step = ros_msg.width;
+  ros_msg.encoding = "mono8";
   ros_msg.is_bigendian = false;
   ros_msg.data.resize(static_cast<size_t>(ros_msg.height) * ros_msg.step);
+  if (!intensity_image.empty() && ros_msg.width > 0) {
+    const size_t row_bytes = static_cast<size_t>(ros_msg.step);
+    for (uint32_t out_row = 0; out_row < ros_msg.height; ++out_row) {
+      uint32_t src_row = ros_msg.height - 1 - out_row;
+      const uint8_t* src_ptr = intensity_image.ptr(static_cast<int>(src_row));
+      memcpy(ros_msg.data.data() + static_cast<size_t>(out_row) * row_bytes, src_ptr, row_bytes);
+    }
+  }
 
   int packet_number = (frame.fParam.IsMultiFrameFrequency() == 0) ? frame.packet_num : frame.multi_packet_num;
   int points_number = (frame.fParam.IsMultiFrameFrequency() == 0) ? frame.points_num : frame.multi_points_num;
