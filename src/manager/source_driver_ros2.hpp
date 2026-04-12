@@ -143,12 +143,12 @@ inline void SourceDriver::Init(const YAML::Node& config)
   if (driver_param.input_param.send_imu_ros) {
     imu_pub_ = node_ptr_->create_publisher<sensor_msgs::msg::Imu>(driver_param.input_param.ros_send_imu_topic, 10);
   }
-  // if (driver_param.input_param.send_depth_image_ros) {
-  //   depth_img_pub_ = node_ptr_->create_publisher<sensor_msgs::msg::Image>(driver_param.input_param.ros_send_depth_image_topic, 10);
-  // }
-  // if (driver_param.input_param.send_intensity_image_ros) {
-  //   intensity_img_pub_ = node_ptr_->create_publisher<sensor_msgs::msg::Image>(driver_param.input_param.ros_send_intensity_image_topic, 10);
-  // }
+  if (driver_param.input_param.send_depth_image_ros) {
+    depth_img_pub_ = node_ptr_->create_publisher<sensor_msgs::msg::Image>(driver_param.input_param.ros_send_depth_image_topic, 10);
+  }
+  if (driver_param.input_param.send_intensity_image_ros) {
+    intensity_img_pub_ = node_ptr_->create_publisher<sensor_msgs::msg::Image>(driver_param.input_param.ros_send_intensity_image_topic, 10);
+  }
 
   if (driver_param.input_param.ros_send_packet_loss_topic != NULL_TOPIC) {
     loss_pub_ = node_ptr_->create_publisher<hesai_ros_driver::msg::LossPacket>(driver_param.input_param.ros_send_packet_loss_topic, 10);
@@ -186,21 +186,23 @@ inline void SourceDriver::Init(const YAML::Node& config)
   }
   driver_ptr_.reset(new HesaiLidarSdk<LidarPointXYZIRT>());
   driver_param.decoder_param.enable_parser_thread = true;
-  if (driver_param.input_param.send_point_cloud_ros) {
-    driver_ptr_->RegRecvCallback([this](const hesai::lidar::LidarDecodedFrame<hesai::lidar::LidarPointXYZIRT>& frame) {  
-      this->SendPointCloud(frame);  
-    });  
+  const bool send_point_cloud_ros = driver_param.input_param.send_point_cloud_ros;
+  const bool send_depth_image_ros = driver_param.input_param.send_depth_image_ros;
+  const bool send_intensity_image_ros = driver_param.input_param.send_intensity_image_ros;
+  if (send_point_cloud_ros || send_depth_image_ros || send_intensity_image_ros) {
+    driver_ptr_->RegRecvCallback([this, send_point_cloud_ros, send_depth_image_ros, send_intensity_image_ros](
+                                    const hesai::lidar::LidarDecodedFrame<hesai::lidar::LidarPointXYZIRT>& frame) {
+      if (send_point_cloud_ros && pub_) {
+        this->SendPointCloud(frame);
+      }
+      if (send_depth_image_ros && depth_img_pub_) {
+        this->SendDepthImg(frame);
+      }
+      if (send_intensity_image_ros && intensity_img_pub_) {
+        this->SendIntensityImg(frame);
+      }
+    });
   }
-  // if (driver_param.input_param.send_depth_image_ros) {
-  //   driver_ptr_->RegRecvCallback([this](const hesai::lidar::LidarDecodedFrame<hesai::lidar::LidarPointXYZIRT>& frame) {  
-  //     this->SendDepthImg(frame);  
-  //   });  
-  // }
-  // if (driver_param.input_param.send_intensity_image_ros) {
-  //   driver_ptr_->RegRecvCallback([this](const hesai::lidar::LidarDecodedFrame<hesai::lidar::LidarPointXYZIRT>& frame) {  
-  //     this->SendIntensityImg(frame);  
-  //   });  
-  // }
   if (driver_param.input_param.send_imu_ros) {
     driver_ptr_->RegRecvCallback(std::bind(&SourceDriver::SendImuConfig, this, std::placeholders::_1));
   }
@@ -257,7 +259,7 @@ inline void SourceDriver::SendDepthImg(const LidarDecodedFrame<LidarPointXYZIRT>
 
 inline void SourceDriver::SendIntensityImg(const LidarDecodedFrame<LidarPointXYZIRT>& msg)
 {
-  intensity_img_pub_->publish(ToRosDepthImgMsg(msg, frame_id_)); // HOTFIX: change to correct function
+  intensity_img_pub_->publish(ToRosIntensityImgMsg(msg, frame_id_));
 }
 
 inline void SourceDriver::SendCorrection(const u8Array_t &msg)
