@@ -87,10 +87,10 @@ protected:
   void SendPacketLoss(const uint32_t& total_packet_count, const uint32_t& total_packet_loss_count);
   // Used to publish the Packet loss condition
   void SendPTP(const uint8_t& ptp_lock_offset, const u8Array_t& ptp_status);
-  // Used to publish the firetime correction 
-  void SendFiretime(const double *firetime_correction_);
   // Used to publish the imu packet
   void SendImuConfig(const LidarImuData& msg);
+  // Publish raw data packets, sending them one by one
+  void SendPacketOneByOne(const UdpPacket& ros_msg, double timestamp);
 
   // Convert ptp lock offset, status into ROS message
   hesai_ros_driver::msg::Ptp ToRosMsg(const uint8_t& ptp_lock_offset, const u8Array_t& ptp_status);
@@ -104,6 +104,7 @@ protected:
   sensor_msgs::msg::PointCloud2 ToRosMsg(const LidarDecodedFrame<LidarPointXYZIRT>& frame, const std::string& frame_id);
   // Convert packets into ROS messages
   hesai_ros_driver::msg::UdpFrame ToRosMsg(const UdpFrame_t& ros_msg, double timestamp);
+  hesai_ros_driver::msg::UdpPacket ToRosMsg(const UdpPacket& ros_msg, double timestamp);
   // Convert imu, imu into ROS message
   sensor_msgs::msg::Imu ToRosMsg(const LidarImuData& firetime_correction_);
 
@@ -115,9 +116,9 @@ protected:
   void PostProcessIntensityImage(cv::Mat& intensity_image, const cv::Mat& depth_image_ref) const;
   
   // Convert Linear Acceleration from g to m/s^2
-  double From_g_To_ms2(double g);
+  // double From_g_To_ms2(double g);
   // Convert Angular Velocity from degree/s to radian/s
-  double From_degs_To_rads(double degree);
+  // double From_degs_To_rads(double degree);
   std::string frame_id_;
   bool image_flip_vertical_ = true;
   bool image_postprocess_enable_ = false;
@@ -138,6 +139,7 @@ protected:
   rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr imu_pub_;
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr depth_img_pub_;
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr intensity_img_pub_;
+  rclcpp::Publisher<hesai_ros_driver::msg::UdpPacket>::SharedPtr every_pkt_pub_;
 
   //spin thread while Receive data from ROS topic
   boost::thread* subscription_spin_thread_;
@@ -154,7 +156,17 @@ inline void SourceDriver::Init(const YAML::Node& config)
     pub_ = node_ptr_->create_publisher<sensor_msgs::msg::PointCloud2>(driver_param.input_param.ros_send_point_topic, 10);
   }
   if (driver_param.input_param.send_imu_ros) {
-    imu_pub_ = node_ptr_->create_publisher<sensor_msgs::msg::Imu>(driver_param.input_param.ros_send_imu_topic, 10);
+    int imu_queue_size = 20;
+    if (driver_param.input_param.source_type == DATA_FROM_PCAP || driver_param.input_param.source_type == DATA_FROM_ROS_PACKET) {
+      imu_queue_size = 200;
+    }
+    imu_pub_ = node_ptr_->create_publisher<sensor_msgs::msg::Imu>(driver_param.input_param.ros_send_imu_topic, imu_queue_size);
+  }
+  if (driver_param.input_param.send_depth_image_ros) {
+    depth_img_pub_ = node_ptr_->create_publisher<sensor_msgs::msg::Image>(driver_param.input_param.ros_send_depth_image_topic, 10);
+  }
+  if (driver_param.input_param.send_intensity_image_ros) {
+    intensity_img_pub_ = node_ptr_->create_publisher<sensor_msgs::msg::Image>(driver_param.input_param.ros_send_intensity_image_topic, 10);
   }
   if (driver_param.input_param.send_depth_image_ros) {
     depth_img_pub_ = node_ptr_->create_publisher<sensor_msgs::msg::Image>(driver_param.input_param.ros_send_depth_image_topic, 10);
@@ -167,23 +179,23 @@ inline void SourceDriver::Init(const YAML::Node& config)
     loss_pub_ = node_ptr_->create_publisher<hesai_ros_driver::msg::LossPacket>(driver_param.input_param.ros_send_packet_loss_topic, 10);
   }
 
+  rclcpp::QoS qos_settings(10);
+  qos_settings.transient_local();
   if (driver_param.input_param.source_type == DATA_FROM_LIDAR) {
     if (driver_param.input_param.ros_send_ptp_topic != NULL_TOPIC) {
-      ptp_pub_ = node_ptr_->create_publisher<hesai_ros_driver::msg::Ptp>(driver_param.input_param.ros_send_ptp_topic, 10);
+      ptp_pub_ = node_ptr_->create_publisher<hesai_ros_driver::msg::Ptp>(driver_param.input_param.ros_send_ptp_topic, qos_settings);
     }
 
     if (driver_param.input_param.ros_send_correction_topic != NULL_TOPIC) {
-      crt_pub_ = node_ptr_->create_publisher<std_msgs::msg::UInt8MultiArray>(driver_param.input_param.ros_send_correction_topic, 10);
+      crt_pub_ = node_ptr_->create_publisher<std_msgs::msg::UInt8MultiArray>(driver_param.input_param.ros_send_correction_topic, qos_settings);
     }
-  }
-  if (! driver_param.input_param.firetimes_path.empty() ) {
-    if (driver_param.input_param.ros_send_firetime_topic != NULL_TOPIC) {
-      firetime_pub_ = node_ptr_->create_publisher<hesai_ros_driver::msg::Firetime>(driver_param.input_param.ros_send_firetime_topic, 10);
-    } 
   }
 
   if (driver_param.input_param.send_packet_ros) {
     pkt_pub_ = node_ptr_->create_publisher<hesai_ros_driver::msg::UdpFrame>(driver_param.input_param.ros_send_packet_topic, 10);
+  }
+  if (driver_param.input_param.ros_send_every_packet_topic != NULL_TOPIC) {
+    every_pkt_pub_ = node_ptr_->create_publisher<hesai_ros_driver::msg::UdpPacket>(driver_param.input_param.ros_send_every_packet_topic, 10);
   }
 
   if (driver_param.input_param.source_type == DATA_FROM_ROS_PACKET) {
@@ -254,6 +266,9 @@ inline void SourceDriver::Init(const YAML::Node& config)
   if (driver_param.input_param.send_packet_ros) {
     driver_ptr_->RegRecvCallback(std::bind(&SourceDriver::SendPacket, this, std::placeholders::_1, std::placeholders::_2)) ;
   }
+  if (driver_param.input_param.ros_send_every_packet_topic != NULL_TOPIC) {
+    driver_ptr_->RegRecvCallback(std::bind(&SourceDriver::SendPacketOneByOne, this, std::placeholders::_1, std::placeholders::_2));
+  }
   if (driver_param.input_param.ros_send_packet_loss_topic != NULL_TOPIC) {
     driver_ptr_->RegRecvCallback(std::bind(&SourceDriver::SendPacketLoss, this, std::placeholders::_1, std::placeholders::_2));
   }
@@ -322,16 +337,15 @@ inline void SourceDriver::SendPTP(const uint8_t& ptp_lock_offset, const u8Array_
   ptp_pub_->publish(ToRosMsg(ptp_lock_offset, ptp_status));
 }
 
-inline void SourceDriver::SendFiretime(const double *firetime_correction_)
-{
-  firetime_pub_->publish(ToRosMsg(firetime_correction_));
-}
-
 inline void SourceDriver::SendImuConfig(const LidarImuData& msg)
 {
   imu_pub_->publish(ToRosMsg(msg));
 }
 
+inline void SourceDriver::SendPacketOneByOne(const UdpPacket& msg, double timestamp)
+{
+  every_pkt_pub_->publish(ToRosMsg(msg, timestamp));
+}
 inline sensor_msgs::msg::PointCloud2 SourceDriver::ToRosMsg(const LidarDecodedFrame<LidarPointXYZIRT>& frame, const std::string& frame_id)
 {
   sensor_msgs::msg::PointCloud2 ros_msg;
@@ -521,12 +535,16 @@ inline void SourceDriver::PostProcessDepthImage(cv::Mat& depth_image) const
     }
   }
 
-  // Step 2: Inpainting to fill larger voids that the box-filter couldn't reach.
-  // Must run before smoothing so hole_mask == 0.0f is still exact.
+  // Step 2: Inpainting restricted to holes adjacent to valid data.
+  // Dilating the valid mask before building the inpaint mask ensures we never
+  // fill genuine voids (sky, out-of-range areas) — only small gaps between returns.
   if (image_postprocess_enable_ && image_interpolation_enable_) {
-    cv::Mat hole_mask = depth_image == 0.0f;
+    cv::Mat valid_mask = depth_image > 0.0f;
+    cv::Mat near_valid;
+    cv::dilate(valid_mask, near_valid, cv::Mat(), cv::Point(-1, -1), 5);
+    cv::Mat hole_mask;
+    cv::bitwise_and(depth_image == 0.0f, near_valid, hole_mask);
     if (cv::countNonZero(hole_mask) > 0) {
-      cv::Mat valid_mask = depth_image > 0.0f;
       double minVal = 0.0, maxVal = 0.0;
       cv::minMaxLoc(depth_image, &minVal, &maxVal, nullptr, nullptr, valid_mask);
       if (maxVal > minVal) {
@@ -607,11 +625,16 @@ inline void SourceDriver::PostProcessIntensityImage(cv::Mat& intensity_image, co
     intensity_float.convertTo(intensity_image, CV_8U);
   }
 
-  // Step 2: Inpainting to fill larger voids that the box-filter couldn't reach.
-  // Must run before smoothing so the zero mask is still exact.
+  // Step 2: Inpainting restricted to holes adjacent to valid data.
   if (image_postprocess_enable_ && image_interpolation_enable_) {
+    cv::Mat valid_mask;
+    cv::compare(intensity_image, 0, valid_mask, cv::CMP_GT);
+    cv::Mat near_valid;
+    cv::dilate(valid_mask, near_valid, cv::Mat(), cv::Point(-1, -1), 5);
     cv::Mat hole_mask;
-    cv::compare(intensity_image, 0, hole_mask, cv::CMP_EQ);
+    cv::Mat all_holes;
+    cv::compare(intensity_image, 0, all_holes, cv::CMP_EQ);
+    cv::bitwise_and(all_holes, near_valid, hole_mask);
     if (cv::countNonZero(hole_mask) > 0) {
       cv::Mat inpainted;
       cv::inpaint(intensity_image, hole_mask, inpainted, 3.0, cv::INPAINT_TELEA);
@@ -632,6 +655,15 @@ inline void SourceDriver::PostProcessIntensityImage(cv::Mat& intensity_image, co
 
 
 
+inline hesai_ros_driver::msg::UdpPacket SourceDriver::ToRosMsg(const UdpPacket& ros_msg, double timestamp) {
+  hesai_ros_driver::msg::UdpPacket rawpacket;
+  rawpacket.size = ros_msg.packet_len;
+  rawpacket.data.resize(ros_msg.packet_len);
+  memcpy(&rawpacket.data[0], &ros_msg.buffer[0], ros_msg.packet_len);
+  rawpacket.stamp.sec = (uint32_t)floor(timestamp);
+  rawpacket.stamp.nanosec = (uint32_t)round((timestamp - rawpacket.stamp.sec) * 1e9);
+  return rawpacket;
+}
 inline hesai_ros_driver::msg::UdpFrame SourceDriver::ToRosMsg(const UdpFrame_t& ros_msg, double timestamp) {
   hesai_ros_driver::msg::UdpFrame rs_msg;
   for (size_t i = 0 ; i < ros_msg.size(); i++) {
@@ -671,7 +703,9 @@ inline hesai_ros_driver::msg::Ptp SourceDriver::ToRosMsg(const uint8_t& ptp_lock
 {
   hesai_ros_driver::msg::Ptp msg;
   msg.ptp_lock_offset = ptp_lock_offset;
-  std::copy(ptp_status.begin(), ptp_status.begin() + std::min(16ul, ptp_status.size()), msg.ptp_status.begin());
+  msg.ptp_status_size = ptp_status.size();
+  msg.ptp_status.resize(ptp_status.size());
+  std::copy(ptp_status.begin(), ptp_status.end(), msg.ptp_status.begin());
   return msg;
 }
 
@@ -693,12 +727,12 @@ inline sensor_msgs::msg::Imu SourceDriver::ToRosMsg(const LidarImuData &imu_conf
     printf("does not support timestamps greater than 19 January 2038 03:14:07 (now %lf)\n", imu_config_.timestamp);
   }
   ros_msg.header.frame_id = frame_id_;
-  ros_msg.linear_acceleration.x = From_g_To_ms2(imu_config_.imu_accel_x);
-  ros_msg.linear_acceleration.y = From_g_To_ms2(imu_config_.imu_accel_y);
-  ros_msg.linear_acceleration.z = From_g_To_ms2(imu_config_.imu_accel_z);
-  ros_msg.angular_velocity.x = From_degs_To_rads(imu_config_.imu_ang_vel_x);
-  ros_msg.angular_velocity.y = From_degs_To_rads(imu_config_.imu_ang_vel_y);
-  ros_msg.angular_velocity.z = From_degs_To_rads(imu_config_.imu_ang_vel_z);
+  ros_msg.linear_acceleration.x = (imu_config_.imu_accel_x);
+  ros_msg.linear_acceleration.y = (imu_config_.imu_accel_y);
+  ros_msg.linear_acceleration.z = (imu_config_.imu_accel_z);
+  ros_msg.angular_velocity.x = (imu_config_.imu_ang_vel_x);
+  ros_msg.angular_velocity.y = (imu_config_.imu_ang_vel_y);
+  ros_msg.angular_velocity.z = (imu_config_.imu_ang_vel_z);
   return ros_msg;
 }
 
@@ -720,12 +754,13 @@ inline void SourceDriver::ReceiveCorrection(const std_msgs::msg::UInt8MultiArray
     }
   }
 }
-inline double SourceDriver::From_g_To_ms2(double g)
-{
-  return g * 9.80665;
-}
 
-inline double SourceDriver::From_degs_To_rads(double degree)
-{
-  return degree * M_PI / 180.0;
-}
+// inline double SourceDriver::From_g_To_ms2(double g)
+// {
+//   return g * 9.80665;
+// }
+
+// inline double SourceDriver::From_degs_To_rads(double degree)
+// {
+//   return degree * M_PI / 180.0;
+// }

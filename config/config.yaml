@@ -96,7 +96,7 @@ lidar:
       send_depth_image_ros: true                     # true: Send depth image through ROS
       image_flip_vertical: true                      # Flip images vertically for standard orientation
       image_postprocess_enable: true                 # Master toggle for all image post-processing
-      image_interpolation_enable: false               # Enable hole-filling interpolation
+      image_interpolation_enable: true               # Enable hole-filling interpolation
       image_interpolation_iterations: 2              # Box-filter passes to fill small holes (more = wider fill)
       image_interpolation_kernel_size: 3             # Kernel size for box-filter interpolation (must be odd)
       image_smoothing_enable: false                   # Enable Gaussian smoothing after hole-filling
