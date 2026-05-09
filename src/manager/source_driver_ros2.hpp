@@ -46,8 +46,9 @@
 #include <chrono>
 #include <string>
 #include <functional>
-#include <algorithm>
-#include <opencv2/imgproc.hpp>
+#include <algorithm> // TODO: check if needed
+#include <opencv2/imgproc.hpp> // TODO: check if needed
+#include <opencv2/photo.hpp> // inpainting for depth hole filling
 #include <boost/thread.hpp>
 #include "source_drive_common.hpp"
 
@@ -120,7 +121,7 @@ protected:
   std::string frame_id_;
   bool image_flip_vertical_ = true;
   bool image_postprocess_enable_ = false;
-  bool image_interpolation_enable_ = true;
+  bool image_interpolation_enable_ = false;
   int image_interpolation_iterations_ = 1;
   int image_interpolation_kernel_size_ = 3;
   bool image_smoothing_enable_ = false;
@@ -185,7 +186,6 @@ inline void SourceDriver::Init(const YAML::Node& config)
     pkt_pub_ = node_ptr_->create_publisher<hesai_ros_driver::msg::UdpFrame>(driver_param.input_param.ros_send_packet_topic, 10);
   }
 
-
   if (driver_param.input_param.source_type == DATA_FROM_ROS_PACKET) {
     pkt_sub_ = node_ptr_->create_subscription<hesai_ros_driver::msg::UdpFrame>(driver_param.input_param.ros_recv_packet_topic, 10, 
                               std::bind(&SourceDriver::ReceivePacket, this, std::placeholders::_1));
@@ -209,6 +209,7 @@ inline void SourceDriver::Init(const YAML::Node& config)
   YamlRead<bool>(config["ros"], "image_smoothing_enable", image_smoothing_enable_, false);
   YamlRead<int>(config["ros"], "image_smoothing_kernel_size", image_smoothing_kernel_size_, 3);
 
+  // TODO: Check post processing
   image_interpolation_iterations_ = std::max(0, image_interpolation_iterations_);
   image_interpolation_kernel_size_ = std::max(1, image_interpolation_kernel_size_);
   if ((image_interpolation_kernel_size_ % 2) == 0) {
@@ -396,6 +397,7 @@ inline sensor_msgs::msg::PointCloud2 SourceDriver::ToRosMsg(const LidarDecodedFr
   return ros_msg;
 }
 
+// TODO: Check this
 // Maybe try to keep ToRosMsg 
 inline sensor_msgs::msg::Image SourceDriver::ToRosDepthImgMsg(const LidarDecodedFrame<LidarPointXYZIRT>& frame, const std::string& frame_id)
 {
@@ -405,15 +407,14 @@ inline sensor_msgs::msg::Image SourceDriver::ToRosDepthImgMsg(const LidarDecoded
   double frame_start_timestamp = (frame.fParam.IsMultiFrameFrequency() == 0) ? frame.frame_start_timestamp : frame.multi_frame_start_timestamp;
   double frame_end_timestamp = (frame.fParam.IsMultiFrameFrequency() == 0) ? frame.frame_end_timestamp : frame.multi_frame_end_timestamp;
   const char *prefix = (frame.fParam.IsMultiFrameFrequency() == 0) ? "raw" : "multi";
-  // ros_msg.fields.clear();
 
-  // Depth image conversion
-  auto depth_image = frame.depth_img;
+  // Clone to avoid modifying the shared frame data (cv::Mat copy is shallow).
+  cv::Mat depth_image = frame.depth_img.clone();
   PostProcessDepthImage(depth_image);
   ros_msg.height = static_cast<uint32_t>(depth_image.rows);
   ros_msg.width = static_cast<uint32_t>(depth_image.cols);
   ros_msg.step = ros_msg.width * static_cast<uint32_t>(sizeof(float));
-  ros_msg.encoding = "32FC1";
+  ros_msg.encoding = "32FC1"; // TODO: Check if matches ouster driver
   ros_msg.is_bigendian = false;
   ros_msg.data.resize(static_cast<size_t>(ros_msg.height) * ros_msg.step);
   if (!depth_image.empty() && ros_msg.width > 0) {
@@ -425,7 +426,6 @@ inline sensor_msgs::msg::Image SourceDriver::ToRosDepthImgMsg(const LidarDecoded
     }
   }
 
-  // printf("HesaiLidar Runing Status [standby mode:%u]  |  [speed:%u]\n", frame.work_mode, frame.spin_speed);
   printf("%s frame:%d start time:%lf end time:%lf\n", prefix, frame_index, frame_start_timestamp, frame_end_timestamp) ;
   std::cout.flush();
   auto sec = (uint64_t)floor(frame_start_timestamp);
@@ -442,20 +442,21 @@ inline sensor_msgs::msg::Image SourceDriver::ToRosDepthImgMsg(const LidarDecoded
 inline sensor_msgs::msg::Image SourceDriver::ToRosIntensityImgMsg(const LidarDecodedFrame<LidarPointXYZIRT>& frame, const std::string& frame_id)
 {
   sensor_msgs::msg::Image ros_msg;
+  // TODO: Understand how isMultiFrameFrequency works and why this difference
   // Intensityimage *pImage = (frame.fParam.IsMultiFrameFrequency() == 0) ? frame.points : frame.multi_points;
   int frame_index = (frame.fParam.IsMultiFrameFrequency() == 0) ? frame.frame_index : frame.multi_frame_index;
   double frame_start_timestamp = (frame.fParam.IsMultiFrameFrequency() == 0) ? frame.frame_start_timestamp : frame.multi_frame_start_timestamp;
   double frame_end_timestamp = (frame.fParam.IsMultiFrameFrequency() == 0) ? frame.frame_end_timestamp : frame.multi_frame_end_timestamp;
   const char *prefix = (frame.fParam.IsMultiFrameFrequency() == 0) ? "raw" : "multi";
-  // ros_msg.fields.clear();
 
-  // Intensity image conversion
-  auto intensity_image = frame.intensity_img;
+  // Clone to avoid modifying the shared frame data (cv::Mat copy is shallow).
+  // Use the original frame.depth_img (unmodified) as the validity reference.
+  cv::Mat intensity_image = frame.intensity_img.clone();
   PostProcessIntensityImage(intensity_image, frame.depth_img);
   ros_msg.height = static_cast<uint32_t>(intensity_image.rows);
   ros_msg.width = static_cast<uint32_t>(intensity_image.cols);
   ros_msg.step = ros_msg.width;
-  ros_msg.encoding = "mono8";
+  ros_msg.encoding = "mono8"; // TODO: Check if matches ouster driver
   ros_msg.is_bigendian = false;
   ros_msg.data.resize(static_cast<size_t>(ros_msg.height) * ros_msg.step);
   if (!intensity_image.empty() && ros_msg.width > 0) {
@@ -490,6 +491,7 @@ inline void SourceDriver::PostProcessDepthImage(cv::Mat& depth_image) const
     return;
   }
 
+  // Step 1: Iterative box-filter to fill small holes from neighboring valid pixels.
   if (image_postprocess_enable_ && image_interpolation_enable_ && image_interpolation_iterations_ > 0) {
     cv::Mat valid_mask = depth_image > 0.0f;
     cv::Mat valid_float;
@@ -519,6 +521,36 @@ inline void SourceDriver::PostProcessDepthImage(cv::Mat& depth_image) const
     }
   }
 
+  // Step 2: Inpainting to fill larger voids that the box-filter couldn't reach.
+  // Must run before smoothing so hole_mask == 0.0f is still exact.
+  if (image_postprocess_enable_ && image_interpolation_enable_) {
+    cv::Mat hole_mask = depth_image == 0.0f;
+    if (cv::countNonZero(hole_mask) > 0) {
+      cv::Mat valid_mask = depth_image > 0.0f;
+      double minVal = 0.0, maxVal = 0.0;
+      cv::minMaxLoc(depth_image, &minVal, &maxVal, nullptr, nullptr, valid_mask);
+      if (maxVal > minVal) {
+        cv::Mat depth_norm;
+        depth_image.copyTo(depth_norm);
+        depth_norm.setTo(minVal, hole_mask);
+        depth_norm = (depth_norm - static_cast<float>(minVal)) / static_cast<float>(maxVal - minVal);
+        depth_norm.convertTo(depth_norm, CV_8U, 255.0);
+
+        cv::Mat inpaint_mask;
+        hole_mask.convertTo(inpaint_mask, CV_8U, 255.0);
+        cv::Mat inpainted_8u;
+        cv::inpaint(depth_norm, inpaint_mask, inpainted_8u, 3.0, cv::INPAINT_TELEA);
+
+        cv::Mat inpainted_f;
+        inpainted_8u.convertTo(inpainted_f, CV_32F, 1.0 / 255.0);
+        inpainted_f = inpainted_f * static_cast<float>(maxVal - minVal) + static_cast<float>(minVal);
+        inpainted_f.copyTo(depth_image, hole_mask);
+      }
+    }
+  }
+
+  // Step 3: Gaussian smoothing to reduce noise and sharpen transitions.
+  // Runs last so it blends both interpolated and original pixels uniformly.
   if (image_postprocess_enable_ && image_smoothing_enable_ && image_smoothing_kernel_size_ > 1) {
     cv::GaussianBlur(depth_image,
                      depth_image,
@@ -535,6 +567,7 @@ inline void SourceDriver::PostProcessIntensityImage(cv::Mat& intensity_image, co
     return;
   }
 
+  // Step 1: Iterative box-filter to fill small holes from neighboring valid pixels.
   if (image_postprocess_enable_ && image_interpolation_enable_ && image_interpolation_iterations_ > 0) {
     cv::Mat valid_mask;
     if (!depth_image_ref.empty() && depth_image_ref.type() == CV_32FC1 && depth_image_ref.size() == intensity_image.size()) {
@@ -574,6 +607,19 @@ inline void SourceDriver::PostProcessIntensityImage(cv::Mat& intensity_image, co
     intensity_float.convertTo(intensity_image, CV_8U);
   }
 
+  // Step 2: Inpainting to fill larger voids that the box-filter couldn't reach.
+  // Must run before smoothing so the zero mask is still exact.
+  if (image_postprocess_enable_ && image_interpolation_enable_) {
+    cv::Mat hole_mask;
+    cv::compare(intensity_image, 0, hole_mask, cv::CMP_EQ);
+    if (cv::countNonZero(hole_mask) > 0) {
+      cv::Mat inpainted;
+      cv::inpaint(intensity_image, hole_mask, inpainted, 3.0, cv::INPAINT_TELEA);
+      inpainted.copyTo(intensity_image, hole_mask);
+    }
+  }
+
+  // Step 3: Gaussian smoothing — runs last so it blends filled and original pixels uniformly.
   if (image_postprocess_enable_ && image_smoothing_enable_ && image_smoothing_kernel_size_ > 1) {
     cv::GaussianBlur(intensity_image,
                      intensity_image,

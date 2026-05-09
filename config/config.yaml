@@ -68,7 +68,7 @@ lidar:
       multi_fov_filter_ranges: "" # compare to channel_fov_filter_path, multi_fov_filter_ranges for all channels. example config "[20,30];[40,200]"
       # other config
       enable_packet_loss_tool: true         # enable the udp packet loss detection tool
-      distance_correction_flag: false       # set to true when optical centre correction needs to be turned on
+      distance_correction_flag: true        # set to true when optical centre correction needs to be turned on
       xt_spot_correction: false             # Set to TRUE when XT S point cloud layering correction is required
       device_udp_src_port: 0                # Filter point clouds for specified source ports in case of multiple lidar, setting >=1024
       device_fault_port: 0                  # Filter fault message for specified source ports in case of multiple lidar, setting >=1024
@@ -92,5 +92,12 @@ lidar:
       send_packet_ros: false                          # true: Send packets through ROS 
       send_point_cloud_ros: true                      # true: Send point cloud through ROS    
       send_imu_ros: true                              # true: Send imu through ROS    
-      send_intensity_image_ros: true                 # true: Send intensity image through ROS    
+      send_intensity_image_ros: true                 # true: Send intensity image through ROS
       send_depth_image_ros: true                     # true: Send depth image through ROS
+      image_flip_vertical: true                      # Flip images vertically for standard orientation
+      image_postprocess_enable: true                 # Master toggle for all image post-processing
+      image_interpolation_enable: false               # Enable hole-filling interpolation
+      image_interpolation_iterations: 2              # Box-filter passes to fill small holes (more = wider fill)
+      image_interpolation_kernel_size: 3             # Kernel size for box-filter interpolation (must be odd)
+      image_smoothing_enable: false                   # Enable Gaussian smoothing after hole-filling
+      image_smoothing_kernel_size: 3                 # Gaussian kernel size (must be odd)
