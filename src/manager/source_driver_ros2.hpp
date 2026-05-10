@@ -46,6 +46,8 @@
 #include <chrono>
 #include <string>
 #include <functional>
+#include <algorithm> 
+#include <easy/profiler.h>
 #include <boost/thread.hpp>
 #include "source_drive_common.hpp"
 
@@ -131,6 +133,7 @@ protected:
 };
 inline void SourceDriver::Init(const YAML::Node& config)
 {
+  EASY_PROFILER_ENABLE;
   DriverParam driver_param;
   DriveYamlParam yaml_param;
   yaml_param.GetDriveYamlParam(config, driver_param);
@@ -210,6 +213,7 @@ inline void SourceDriver::Init(const YAML::Node& config)
   if (send_point_cloud_ros || send_depth_image_ros || send_intensity_image_ros) {
     driver_ptr_->RegRecvCallback([this, send_point_cloud_ros, send_depth_image_ros, send_intensity_image_ros](
                                      const hesai::lidar::LidarDecodedFrame<hesai::lidar::LidarPointXYZIRT>& frame) {
+      EASY_BLOCK("FrameCallback", profiler::colors::White);
       if (send_point_cloud_ros && pub_) {
         this->SendPointCloud(frame);
       }
@@ -255,6 +259,7 @@ inline void SourceDriver::Start()
 
 inline SourceDriver::~SourceDriver()
 {
+  profiler::dumpBlocksToFile("/tmp/hesai_profile.prof");
   Stop();
 }
 
@@ -270,16 +275,19 @@ inline void SourceDriver::SendPacket(const UdpFrame_t& msg, double timestamp)
 
 inline void SourceDriver::SendPointCloud(const LidarDecodedFrame<LidarPointXYZIRT>& msg)
 {
+  EASY_FUNCTION(profiler::colors::Navy);
   pub_->publish(ToRosMsg(msg, frame_id_));
 }
 
 inline void SourceDriver::SendDepthImg(const LidarDecodedFrame<LidarPointXYZIRT>& msg)
 {
+  EASY_FUNCTION(profiler::colors::DarkBlue);
   depth_img_pub_->publish(ToRosDepthImgMsg(msg, frame_id_));
 }
 
 inline void SourceDriver::SendIntensityImg(const LidarDecodedFrame<LidarPointXYZIRT>& msg)
 {
+  EASY_FUNCTION(profiler::colors::DarkGreen);
   intensity_img_pub_->publish(ToRosIntensityImgMsg(msg, frame_id_));
 }
 
@@ -309,6 +317,7 @@ inline void SourceDriver::SendPacketOneByOne(const UdpPacket& msg, double timest
 }
 inline sensor_msgs::msg::PointCloud2 SourceDriver::ToRosMsg(const LidarDecodedFrame<LidarPointXYZIRT>& frame, const std::string& frame_id)
 {
+  EASY_FUNCTION(profiler::colors::Cyan);
   sensor_msgs::msg::PointCloud2 ros_msg;
   uint32_t points_number = (frame.fParam.IsMultiFrameFrequency() == 0) ? frame.points_num : frame.multi_points_num;
   uint32_t packet_number = (frame.fParam.IsMultiFrameFrequency() == 0) ? frame.packet_num : frame.multi_packet_num;
@@ -403,6 +412,7 @@ inline sensor_msgs::msg::PointCloud2 SourceDriver::ToRosMsg(const LidarDecodedFr
 
 inline sensor_msgs::msg::Image SourceDriver::ToRosDepthImgMsg(const LidarDecodedFrame<LidarPointXYZIRT>& frame, const std::string& frame_id)
 {
+  EASY_FUNCTION(profiler::colors::DarkBlue);
   sensor_msgs::msg::Image ros_msg;
   int frame_index = (frame.fParam.IsMultiFrameFrequency() == 0) ? frame.frame_index : frame.multi_frame_index;
   double frame_start_timestamp = (frame.fParam.IsMultiFrameFrequency() == 0) ? frame.frame_start_timestamp : frame.multi_frame_start_timestamp;
@@ -440,6 +450,7 @@ inline sensor_msgs::msg::Image SourceDriver::ToRosDepthImgMsg(const LidarDecoded
 
 inline sensor_msgs::msg::Image SourceDriver::ToRosIntensityImgMsg(const LidarDecodedFrame<LidarPointXYZIRT>& frame, const std::string& frame_id)
 {
+  EASY_FUNCTION(profiler::colors::DarkGreen);
   sensor_msgs::msg::Image ros_msg;
   int frame_index = (frame.fParam.IsMultiFrameFrequency() == 0) ? frame.frame_index : frame.multi_frame_index;
   double frame_start_timestamp = (frame.fParam.IsMultiFrameFrequency() == 0) ? frame.frame_start_timestamp : frame.multi_frame_start_timestamp;
