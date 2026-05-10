@@ -47,6 +47,7 @@
 #include <string>
 #include <functional>
 #include <algorithm> // TODO: check if needed
+#include <easy/profiler.h>
 #include <opencv2/imgproc.hpp> // TODO: check if needed
 #include <opencv2/photo.hpp> // inpainting for depth hole filling
 #include <boost/thread.hpp>
@@ -146,6 +147,7 @@ protected:
 };
 inline void SourceDriver::Init(const YAML::Node& config)
 {
+  EASY_PROFILER_ENABLE;
   DriverParam driver_param;
   DriveYamlParam yaml_param;
   yaml_param.GetDriveYamlParam(config, driver_param);
@@ -249,6 +251,7 @@ inline void SourceDriver::Init(const YAML::Node& config)
   if (send_point_cloud_ros || send_depth_image_ros || send_intensity_image_ros) {
     driver_ptr_->RegRecvCallback([this, send_point_cloud_ros, send_depth_image_ros, send_intensity_image_ros](
                                     const hesai::lidar::LidarDecodedFrame<hesai::lidar::LidarPointXYZIRT>& frame) {
+      EASY_BLOCK("FrameCallback", profiler::colors::White);
       if (send_point_cloud_ros && pub_) {
         this->SendPointCloud(frame);
       }
@@ -294,6 +297,7 @@ inline void SourceDriver::Start()
 
 inline SourceDriver::~SourceDriver()
 {
+  profiler::dumpBlocksToFile("/tmp/hesai_profile.prof");
   Stop();
 }
 
@@ -309,16 +313,19 @@ inline void SourceDriver::SendPacket(const UdpFrame_t& msg, double timestamp)
 
 inline void SourceDriver::SendPointCloud(const LidarDecodedFrame<LidarPointXYZIRT>& msg)
 {
+  EASY_FUNCTION(profiler::colors::Navy);
   pub_->publish(ToRosMsg(msg, frame_id_));
 }
 
 inline void SourceDriver::SendDepthImg(const LidarDecodedFrame<LidarPointXYZIRT>& msg)
 {
+  EASY_FUNCTION(profiler::colors::DarkBlue);
   depth_img_pub_->publish(ToRosDepthImgMsg(msg, frame_id_));
 }
 
 inline void SourceDriver::SendIntensityImg(const LidarDecodedFrame<LidarPointXYZIRT>& msg)
 {
+  EASY_FUNCTION(profiler::colors::DarkGreen);
   intensity_img_pub_->publish(ToRosIntensityImgMsg(msg, frame_id_));
 }
 
@@ -348,6 +355,7 @@ inline void SourceDriver::SendPacketOneByOne(const UdpPacket& msg, double timest
 }
 inline sensor_msgs::msg::PointCloud2 SourceDriver::ToRosMsg(const LidarDecodedFrame<LidarPointXYZIRT>& frame, const std::string& frame_id)
 {
+  EASY_FUNCTION(profiler::colors::Cyan);
   sensor_msgs::msg::PointCloud2 ros_msg;
   uint32_t points_number = (frame.fParam.IsMultiFrameFrequency() == 0) ? frame.points_num : frame.multi_points_num;
   uint32_t packet_number = (frame.fParam.IsMultiFrameFrequency() == 0) ? frame.packet_num : frame.multi_packet_num;
@@ -415,6 +423,7 @@ inline sensor_msgs::msg::PointCloud2 SourceDriver::ToRosMsg(const LidarDecodedFr
 // Maybe try to keep ToRosMsg 
 inline sensor_msgs::msg::Image SourceDriver::ToRosDepthImgMsg(const LidarDecodedFrame<LidarPointXYZIRT>& frame, const std::string& frame_id)
 {
+  EASY_FUNCTION(profiler::colors::DarkBlue);
   sensor_msgs::msg::Image ros_msg;
   // Depthimage *pImage = (frame.fParam.IsMultiFrameFrequency() == 0) ? frame.points : frame.multi_points;
   int frame_index = (frame.fParam.IsMultiFrameFrequency() == 0) ? frame.frame_index : frame.multi_frame_index;
@@ -455,6 +464,7 @@ inline sensor_msgs::msg::Image SourceDriver::ToRosDepthImgMsg(const LidarDecoded
 
 inline sensor_msgs::msg::Image SourceDriver::ToRosIntensityImgMsg(const LidarDecodedFrame<LidarPointXYZIRT>& frame, const std::string& frame_id)
 {
+  EASY_FUNCTION(profiler::colors::DarkGreen);
   sensor_msgs::msg::Image ros_msg;
   // TODO: Understand how isMultiFrameFrequency works and why this difference
   // Intensityimage *pImage = (frame.fParam.IsMultiFrameFrequency() == 0) ? frame.points : frame.multi_points;
@@ -501,12 +511,14 @@ inline sensor_msgs::msg::Image SourceDriver::ToRosIntensityImgMsg(const LidarDec
 
 inline void SourceDriver::PostProcessDepthImage(cv::Mat& depth_image) const
 {
+  EASY_FUNCTION(profiler::colors::Blue);
   if (depth_image.empty() || depth_image.type() != CV_32FC1) {
     return;
   }
 
   // Step 1: Iterative box-filter to fill small holes from neighboring valid pixels.
   if (image_postprocess_enable_ && image_interpolation_enable_ && image_interpolation_iterations_ > 0) {
+    EASY_BLOCK("Depth::BoxFilter", profiler::colors::Cyan);
     cv::Mat valid_mask = depth_image > 0.0f;
     cv::Mat valid_float;
     cv::Mat depth_sum;
@@ -533,12 +545,14 @@ inline void SourceDriver::PostProcessDepthImage(cv::Mat& depth_image) const
       depth_avg.copyTo(depth_image, fillable_mask);
       valid_mask.setTo(255, fillable_mask);
     }
+    EASY_END_BLOCK;
   }
 
   // Step 2: Inpainting restricted to holes adjacent to valid data.
   // Dilating the valid mask before building the inpaint mask ensures we never
   // fill genuine voids (sky, out-of-range areas) — only small gaps between returns.
   if (image_postprocess_enable_ && image_interpolation_enable_) {
+    EASY_BLOCK("Depth::Inpaint", profiler::colors::Magenta);
     cv::Mat valid_mask = depth_image > 0.0f;
     cv::Mat near_valid;
     cv::dilate(valid_mask, near_valid, cv::Mat(), cv::Point(-1, -1), 5);
@@ -565,28 +579,33 @@ inline void SourceDriver::PostProcessDepthImage(cv::Mat& depth_image) const
         inpainted_f.copyTo(depth_image, hole_mask);
       }
     }
+    EASY_END_BLOCK;
   }
 
   // Step 3: Gaussian smoothing to reduce noise and sharpen transitions.
   // Runs last so it blends both interpolated and original pixels uniformly.
   if (image_postprocess_enable_ && image_smoothing_enable_ && image_smoothing_kernel_size_ > 1) {
+    EASY_BLOCK("Depth::GaussianSmooth", profiler::colors::LightBlue);
     cv::GaussianBlur(depth_image,
                      depth_image,
                      cv::Size(image_smoothing_kernel_size_, image_smoothing_kernel_size_),
                      0.0,
                      0.0,
                      cv::BORDER_REPLICATE);
+    EASY_END_BLOCK;
   }
 }
 
 inline void SourceDriver::PostProcessIntensityImage(cv::Mat& intensity_image, const cv::Mat& depth_image_ref) const
 {
+  EASY_FUNCTION(profiler::colors::Green);
   if (intensity_image.empty() || intensity_image.type() != CV_8UC1) {
     return;
   }
 
   // Step 1: Iterative box-filter to fill small holes from neighboring valid pixels.
   if (image_postprocess_enable_ && image_interpolation_enable_ && image_interpolation_iterations_ > 0) {
+    EASY_BLOCK("Intensity::BoxFilter", profiler::colors::Teal);
     cv::Mat valid_mask;
     if (!depth_image_ref.empty() && depth_image_ref.type() == CV_32FC1 && depth_image_ref.size() == intensity_image.size()) {
       valid_mask = depth_image_ref > 0.0f;
@@ -623,10 +642,12 @@ inline void SourceDriver::PostProcessIntensityImage(cv::Mat& intensity_image, co
     }
 
     intensity_float.convertTo(intensity_image, CV_8U);
+    EASY_END_BLOCK;
   }
 
   // Step 2: Inpainting restricted to holes adjacent to valid data.
   if (image_postprocess_enable_ && image_interpolation_enable_) {
+    EASY_BLOCK("Intensity::Inpaint", profiler::colors::Pink);
     cv::Mat valid_mask;
     cv::compare(intensity_image, 0, valid_mask, cv::CMP_GT);
     cv::Mat near_valid;
@@ -640,16 +661,19 @@ inline void SourceDriver::PostProcessIntensityImage(cv::Mat& intensity_image, co
       cv::inpaint(intensity_image, hole_mask, inpainted, 3.0, cv::INPAINT_TELEA);
       inpainted.copyTo(intensity_image, hole_mask);
     }
+    EASY_END_BLOCK;
   }
 
   // Step 3: Gaussian smoothing — runs last so it blends filled and original pixels uniformly.
   if (image_postprocess_enable_ && image_smoothing_enable_ && image_smoothing_kernel_size_ > 1) {
+    EASY_BLOCK("Intensity::GaussianSmooth", profiler::colors::LightGreen);
     cv::GaussianBlur(intensity_image,
                      intensity_image,
                      cv::Size(image_smoothing_kernel_size_, image_smoothing_kernel_size_),
                      0.0,
                      0.0,
                      cv::BORDER_REPLICATE);
+    EASY_END_BLOCK;
   }
 }
 

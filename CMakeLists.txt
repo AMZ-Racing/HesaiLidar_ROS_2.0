@@ -165,6 +165,11 @@ endif($ENV{ROS_VERSION} MATCHES "2")
 #Others#
 find_package(yaml-cpp REQUIRED)
 
+set(EASY_PROFILER_INCLUDE_DIR /workspace/easy_profiler/easy_profiler_core/include)
+set(EASY_PROFILER_LIB /workspace/easy_profiler/build/bin/libeasy_profiler.so)
+include_directories(${EASY_PROFILER_INCLUDE_DIR})
+add_definitions(-DBUILD_WITH_EASY_PROFILER)
+
 #Include directory#
 include_directories(${PROJECT_SOURCE_DIR}/src)
 
@@ -218,10 +223,11 @@ else()
     src/manager/node_manager.cc
     )
 endif()
-target_link_libraries(hesai_ros_driver_node                   
+target_link_libraries(hesai_ros_driver_node
             ${YAML_CPP_LIBRARIES}
             ${Boost_LIBRARIES}
             ${LIB_TARGETS}
+            ${EASY_PROFILER_LIB}
 )              
 
 target_include_directories(hesai_ros_driver_node PRIVATE
