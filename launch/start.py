@@ -13,5 +13,5 @@ def generate_launch_description():
             output='screen',
             # parameters=[{'config_path': yaml_config}]
         ),
-        Node(namespace='rviz2', package='rviz2', executable='rviz2', arguments=['-d',rviz_config])
+        # Node(namespace='rviz2', package='rviz2', executable='rviz2', arguments=['-d',rviz_config])
     ])

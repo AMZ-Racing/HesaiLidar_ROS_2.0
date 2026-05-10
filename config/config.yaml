@@ -1,7 +1,7 @@
 lidar:
   - driver:
       use_gpu: false
-      source_type: 1                                  # The type of data source, 1: real-time lidar connection, 2: pcap, 3: packet rosbag, 4: serial    
+      source_type: 2                                  # The type of data source, 1: real-time lidar connection, 2: pcap, 3: packet rosbag, 4: serial    
       # Depending on the type of source_type, fill in the corresponding configuration block (lidar_udp_type, pcap_type, serial_type)
       lidar_udp_type:
         device_ip_address: 192.168.1.201              # host_ip_address. If empty(""), the source ip of the udp point cloud is used
@@ -29,9 +29,9 @@ lidar:
         caFile: ""                                    # Represents the path of the CA certificate 
 
       pcap_type:
-        pcap_path: "Your pcap file"                         # The path of pcap file
-        correction_file_path: "Your correction file path"   # The path of correction file
-        firetimes_path: "Your firetime file path"           # The path of firetimes file
+        pcap_path: "/workspace/data/outputOT128.pcap"                         # The path of pcap file
+        correction_file_path: "/workspace/data/OT128correction.csv"   # The path of correction file
+        firetimes_path: "/workspace/data/OT128correction_firetime.csv"           # The path of firetimes file
 
         pcap_play_synchronization: true                     # pcap play rate synchronize with the host time
         pcap_play_in_loop: false

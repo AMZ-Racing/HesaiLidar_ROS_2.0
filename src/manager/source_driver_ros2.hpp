@@ -46,6 +46,7 @@
 #include <string>
 #include <functional>
 #include <boost/thread.hpp>
+#include <easy/profiler.h>
 #include "source_drive_common.hpp"
 
 class SourceDriver
@@ -121,6 +122,7 @@ protected:
 };
 inline void SourceDriver::Init(const YAML::Node& config)
 {
+  EASY_PROFILER_ENABLE;
   DriverParam driver_param;
   DriveYamlParam yaml_param;
   yaml_param.GetDriveYamlParam(config, driver_param);
@@ -174,8 +176,9 @@ inline void SourceDriver::Init(const YAML::Node& config)
   driver_ptr_.reset(new HesaiLidarSdk<LidarPointXYZIRT>());
   driver_param.decoder_param.enable_parser_thread = true;
   if (driver_param.input_param.send_point_cloud_ros) {
-    driver_ptr_->RegRecvCallback([this](const hesai::lidar::LidarDecodedFrame<hesai::lidar::LidarPointXYZIRT>& frame) {  
-      this->SendPointCloud(frame);  
+    driver_ptr_->RegRecvCallback([this](const hesai::lidar::LidarDecodedFrame<hesai::lidar::LidarPointXYZIRT>& frame) {
+      EASY_BLOCK("FrameCallback", profiler::colors::White);
+      this->SendPointCloud(frame);
     });  
   }
   if (driver_param.input_param.send_imu_ros) {
@@ -212,6 +215,7 @@ inline void SourceDriver::Start()
 
 inline SourceDriver::~SourceDriver()
 {
+  profiler::dumpBlocksToFile("/tmp/hesai_profile.prof");
   Stop();
 }
 
@@ -227,6 +231,7 @@ inline void SourceDriver::SendPacket(const UdpFrame_t& msg, double timestamp)
 
 inline void SourceDriver::SendPointCloud(const LidarDecodedFrame<LidarPointXYZIRT>& msg)
 {
+  EASY_FUNCTION(profiler::colors::Navy);
   pub_->publish(ToRosMsg(msg, frame_id_));
 }
 
@@ -256,6 +261,7 @@ inline void SourceDriver::SendPacketOneByOne(const UdpPacket& msg, double timest
 }
 inline sensor_msgs::msg::PointCloud2 SourceDriver::ToRosMsg(const LidarDecodedFrame<LidarPointXYZIRT>& frame, const std::string& frame_id)
 {
+  EASY_FUNCTION(profiler::colors::Cyan);
   sensor_msgs::msg::PointCloud2 ros_msg;
   uint32_t points_number = (frame.fParam.IsMultiFrameFrequency() == 0) ? frame.points_num : frame.multi_points_num;
   uint32_t packet_number = (frame.fParam.IsMultiFrameFrequency() == 0) ? frame.packet_num : frame.multi_packet_num;
