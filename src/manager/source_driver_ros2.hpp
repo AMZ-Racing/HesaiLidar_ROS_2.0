@@ -46,9 +46,7 @@
 #include <chrono>
 #include <string>
 #include <functional>
-#include <algorithm> // TODO: check if needed
 #include <easy/profiler.h>
-#include <opencv2/imgproc.hpp> // TODO: check if needed
 #include <opencv2/photo.hpp> // inpainting for depth hole filling
 #include <boost/thread.hpp>
 #include "source_drive_common.hpp"
