@@ -46,8 +46,6 @@
 #include <chrono>
 #include <string>
 #include <functional>
-#include <easy/profiler.h>
-#include <opencv2/photo.hpp> // inpainting for depth hole filling
 #include <boost/thread.hpp>
 #include "source_drive_common.hpp"
 
@@ -111,21 +109,12 @@ protected:
 
   sensor_msgs::msg::Image ToRosIntensityImgMsg(const LidarDecodedFrame<LidarPointXYZIRT>& frame, const std::string& frame_id);
 
-  void PostProcessDepthImage(cv::Mat& depth_image) const;
-  void PostProcessIntensityImage(cv::Mat& intensity_image, const cv::Mat& depth_image_ref) const;
-  
   // Convert Linear Acceleration from g to m/s^2
   // double From_g_To_ms2(double g);
   // Convert Angular Velocity from degree/s to radian/s
   // double From_degs_To_rads(double degree);
   std::string frame_id_;
-  bool image_flip_vertical_ = true;
-  bool image_postprocess_enable_ = false;
-  bool image_interpolation_enable_ = false;
-  int image_interpolation_iterations_ = 1;
-  int image_interpolation_kernel_size_ = 3;
-  bool image_smoothing_enable_ = false;
-  int image_smoothing_kernel_size_ = 3;
+  bool image_flip_vertical_ = false;
 
   rclcpp::Subscription<std_msgs::msg::UInt8MultiArray>::SharedPtr crt_sub_;
   rclcpp::Subscription<hesai_ros_driver::msg::UdpFrame>::SharedPtr pkt_sub_;
@@ -145,7 +134,6 @@ protected:
 };
 inline void SourceDriver::Init(const YAML::Node& config)
 {
-  EASY_PROFILER_ENABLE;
   DriverParam driver_param;
   DriveYamlParam yaml_param;
   yaml_param.GetDriveYamlParam(config, driver_param);
@@ -214,23 +202,6 @@ inline void SourceDriver::Init(const YAML::Node& config)
   const bool send_depth_image_ros = driver_param.input_param.send_depth_image_ros;
   const bool send_intensity_image_ros = driver_param.input_param.send_intensity_image_ros;
   YamlRead<bool>(config["ros"], "image_flip_vertical", image_flip_vertical_, true);
-  YamlRead<bool>(config["ros"], "image_postprocess_enable", image_postprocess_enable_, false);
-  YamlRead<bool>(config["ros"], "image_interpolation_enable", image_interpolation_enable_, true);
-  YamlRead<int>(config["ros"], "image_interpolation_iterations", image_interpolation_iterations_, 1);
-  YamlRead<int>(config["ros"], "image_interpolation_kernel_size", image_interpolation_kernel_size_, 3);
-  YamlRead<bool>(config["ros"], "image_smoothing_enable", image_smoothing_enable_, false);
-  YamlRead<int>(config["ros"], "image_smoothing_kernel_size", image_smoothing_kernel_size_, 3);
-
-  // TODO: Check post processing
-  image_interpolation_iterations_ = std::max(0, image_interpolation_iterations_);
-  image_interpolation_kernel_size_ = std::max(1, image_interpolation_kernel_size_);
-  if ((image_interpolation_kernel_size_ % 2) == 0) {
-    image_interpolation_kernel_size_ += 1;
-  }
-  image_smoothing_kernel_size_ = std::max(1, image_smoothing_kernel_size_);
-  if ((image_smoothing_kernel_size_ % 2) == 0) {
-    image_smoothing_kernel_size_ += 1;
-  }
 
   if (send_depth_image_ros || send_intensity_image_ros) {
     // Depth/intensity image buffers are produced only when remake mode is enabled.
@@ -249,7 +220,6 @@ inline void SourceDriver::Init(const YAML::Node& config)
   if (send_point_cloud_ros || send_depth_image_ros || send_intensity_image_ros) {
     driver_ptr_->RegRecvCallback([this, send_point_cloud_ros, send_depth_image_ros, send_intensity_image_ros](
                                     const hesai::lidar::LidarDecodedFrame<hesai::lidar::LidarPointXYZIRT>& frame) {
-      EASY_BLOCK("FrameCallback", profiler::colors::White);
       if (send_point_cloud_ros && pub_) {
         this->SendPointCloud(frame);
       }
@@ -295,7 +265,6 @@ inline void SourceDriver::Start()
 
 inline SourceDriver::~SourceDriver()
 {
-  profiler::dumpBlocksToFile("/tmp/hesai_profile.prof");
   Stop();
 }
 
@@ -311,19 +280,16 @@ inline void SourceDriver::SendPacket(const UdpFrame_t& msg, double timestamp)
 
 inline void SourceDriver::SendPointCloud(const LidarDecodedFrame<LidarPointXYZIRT>& msg)
 {
-  EASY_FUNCTION(profiler::colors::Navy);
   pub_->publish(ToRosMsg(msg, frame_id_));
 }
 
 inline void SourceDriver::SendDepthImg(const LidarDecodedFrame<LidarPointXYZIRT>& msg)
 {
-  EASY_FUNCTION(profiler::colors::DarkBlue);
   depth_img_pub_->publish(ToRosDepthImgMsg(msg, frame_id_));
 }
 
 inline void SourceDriver::SendIntensityImg(const LidarDecodedFrame<LidarPointXYZIRT>& msg)
 {
-  EASY_FUNCTION(profiler::colors::DarkGreen);
   intensity_img_pub_->publish(ToRosIntensityImgMsg(msg, frame_id_));
 }
 
@@ -353,7 +319,6 @@ inline void SourceDriver::SendPacketOneByOne(const UdpPacket& msg, double timest
 }
 inline sensor_msgs::msg::PointCloud2 SourceDriver::ToRosMsg(const LidarDecodedFrame<LidarPointXYZIRT>& frame, const std::string& frame_id)
 {
-  EASY_FUNCTION(profiler::colors::Cyan);
   sensor_msgs::msg::PointCloud2 ros_msg;
   uint32_t points_number = (frame.fParam.IsMultiFrameFrequency() == 0) ? frame.points_num : frame.multi_points_num;
   uint32_t packet_number = (frame.fParam.IsMultiFrameFrequency() == 0) ? frame.packet_num : frame.multi_packet_num;
@@ -421,7 +386,6 @@ inline sensor_msgs::msg::PointCloud2 SourceDriver::ToRosMsg(const LidarDecodedFr
 // Maybe try to keep ToRosMsg 
 inline sensor_msgs::msg::Image SourceDriver::ToRosDepthImgMsg(const LidarDecodedFrame<LidarPointXYZIRT>& frame, const std::string& frame_id)
 {
-  EASY_FUNCTION(profiler::colors::DarkBlue);
   sensor_msgs::msg::Image ros_msg;
   // Depthimage *pImage = (frame.fParam.IsMultiFrameFrequency() == 0) ? frame.points : frame.multi_points;
   int frame_index = (frame.fParam.IsMultiFrameFrequency() == 0) ? frame.frame_index : frame.multi_frame_index;
@@ -435,7 +399,7 @@ inline sensor_msgs::msg::Image SourceDriver::ToRosDepthImgMsg(const LidarDecoded
   ros_msg.height = static_cast<uint32_t>(depth_image.rows);
   ros_msg.width = static_cast<uint32_t>(depth_image.cols);
   ros_msg.step = ros_msg.width * static_cast<uint32_t>(sizeof(float));
-  ros_msg.encoding = "32FC1"; // TODO: Check if matches ouster driver
+  ros_msg.encoding = "32FC1"; // Ouster uses UINT_16 but I guess we take every precision we can ? 
   ros_msg.is_bigendian = false;
   ros_msg.data.resize(static_cast<size_t>(ros_msg.height) * ros_msg.step);
   if (!depth_image.empty() && ros_msg.width > 0) {
@@ -462,9 +426,8 @@ inline sensor_msgs::msg::Image SourceDriver::ToRosDepthImgMsg(const LidarDecoded
 
 inline sensor_msgs::msg::Image SourceDriver::ToRosIntensityImgMsg(const LidarDecodedFrame<LidarPointXYZIRT>& frame, const std::string& frame_id)
 {
-  EASY_FUNCTION(profiler::colors::DarkGreen);
   sensor_msgs::msg::Image ros_msg;
-  // TODO: Understand how isMultiFrameFrequency works and why this difference
+  // MultiFramFrequency (lower frame rate than point cloud publishing rate) might not work. Didn't bother to test but we will not use it anyways... Just copied the structure from the other message creators
   // Intensityimage *pImage = (frame.fParam.IsMultiFrameFrequency() == 0) ? frame.points : frame.multi_points;
   int frame_index = (frame.fParam.IsMultiFrameFrequency() == 0) ? frame.frame_index : frame.multi_frame_index;
   double frame_start_timestamp = (frame.fParam.IsMultiFrameFrequency() == 0) ? frame.frame_start_timestamp : frame.multi_frame_start_timestamp;
@@ -474,11 +437,10 @@ inline sensor_msgs::msg::Image SourceDriver::ToRosIntensityImgMsg(const LidarDec
   // Clone to avoid modifying the shared frame data (cv::Mat copy is shallow).
   // Use the original frame.depth_img (unmodified) as the validity reference.
   cv::Mat intensity_image = frame.intensity_img.clone();
-  PostProcessIntensityImage(intensity_image, frame.depth_img);
   ros_msg.height = static_cast<uint32_t>(intensity_image.rows);
   ros_msg.width = static_cast<uint32_t>(intensity_image.cols);
   ros_msg.step = ros_msg.width;
-  ros_msg.encoding = "mono8"; // TODO: Check if matches ouster driver
+  ros_msg.encoding = "mono8"; // Using mono8 for intensity since there is not many values anyways
   ros_msg.is_bigendian = false;
   ros_msg.data.resize(static_cast<size_t>(ros_msg.height) * ros_msg.step);
   if (!intensity_image.empty() && ros_msg.width > 0) {
@@ -494,7 +456,7 @@ inline sensor_msgs::msg::Image SourceDriver::ToRosIntensityImgMsg(const LidarDec
   int points_number = (frame.fParam.IsMultiFrameFrequency() == 0) ? frame.points_num : frame.multi_points_num;
 
   // printf("HesaiLidar Runing Status [standby mode:%u]  |  [speed:%u]\n", frame.work_mode, frame.spin_speed);
-  printf("%s frame:%d points:%u packet:%d start time:%lf end time:%lf\n", prefix, frame_index, points_number, packet_number, frame_start_timestamp, frame_end_timestamp) ;
+  // printf("%s frame:%d points:%u packet:%d start time:%lf end time:%lf\n", prefix, frame_index, points_number, packet_number, frame_start_timestamp, frame_end_timestamp) ;
   std::cout.flush();
   auto sec = (uint64_t)floor(frame_start_timestamp);
   if (sec <= std::numeric_limits<int32_t>::max()) {
@@ -506,175 +468,6 @@ inline sensor_msgs::msg::Image SourceDriver::ToRosIntensityImgMsg(const LidarDec
   ros_msg.header.frame_id = frame_id_;
   return ros_msg;
 }
-
-inline void SourceDriver::PostProcessDepthImage(cv::Mat& depth_image) const
-{
-  EASY_FUNCTION(profiler::colors::Blue);
-  if (depth_image.empty() || depth_image.type() != CV_32FC1) {
-    return;
-  }
-
-  // Step 1: Iterative box-filter to fill small holes from neighboring valid pixels.
-  if (image_postprocess_enable_ && image_interpolation_enable_ && image_interpolation_iterations_ > 0) {
-    EASY_BLOCK("Depth::BoxFilter", profiler::colors::Cyan);
-    cv::Mat valid_mask = depth_image > 0.0f;
-    cv::Mat valid_float;
-    cv::Mat depth_sum;
-    cv::Mat valid_count;
-    cv::Mat missing_mask;
-    cv::Mat fillable_mask;
-    cv::Mat depth_avg;
-    const cv::Size kernel(image_interpolation_kernel_size_, image_interpolation_kernel_size_);
-
-    for (int iter = 0; iter < image_interpolation_iterations_; ++iter) {
-      valid_mask.convertTo(valid_float, CV_32F, 1.0 / 255.0);
-      cv::boxFilter(depth_image, depth_sum, CV_32F, kernel, cv::Point(-1, -1), true, cv::BORDER_REPLICATE);
-      cv::boxFilter(valid_float, valid_count, CV_32F, kernel, cv::Point(-1, -1), true, cv::BORDER_REPLICATE);
-
-      cv::compare(valid_mask, 0, missing_mask, cv::CMP_EQ);
-      cv::compare(valid_count, 0.0f, fillable_mask, cv::CMP_GT);
-      cv::bitwise_and(missing_mask, fillable_mask, fillable_mask);
-
-      if (cv::countNonZero(fillable_mask) == 0) {
-        break;
-      }
-
-      cv::divide(depth_sum, valid_count + 1e-6f, depth_avg);
-      depth_avg.copyTo(depth_image, fillable_mask);
-      valid_mask.setTo(255, fillable_mask);
-    }
-    EASY_END_BLOCK;
-  }
-
-  // Step 2: Inpainting restricted to holes adjacent to valid data.
-  // Dilating the valid mask before building the inpaint mask ensures we never
-  // fill genuine voids (sky, out-of-range areas) — only small gaps between returns.
-  if (image_postprocess_enable_ && image_interpolation_enable_) {
-    EASY_BLOCK("Depth::Inpaint", profiler::colors::Magenta);
-    cv::Mat valid_mask = depth_image > 0.0f;
-    cv::Mat near_valid;
-    cv::dilate(valid_mask, near_valid, cv::Mat(), cv::Point(-1, -1), 5);
-    cv::Mat hole_mask;
-    cv::bitwise_and(depth_image == 0.0f, near_valid, hole_mask);
-    if (cv::countNonZero(hole_mask) > 0) {
-      double minVal = 0.0, maxVal = 0.0;
-      cv::minMaxLoc(depth_image, &minVal, &maxVal, nullptr, nullptr, valid_mask);
-      if (maxVal > minVal) {
-        cv::Mat depth_norm;
-        depth_image.copyTo(depth_norm);
-        depth_norm.setTo(minVal, hole_mask);
-        depth_norm = (depth_norm - static_cast<float>(minVal)) / static_cast<float>(maxVal - minVal);
-        depth_norm.convertTo(depth_norm, CV_8U, 255.0);
-
-        cv::Mat inpaint_mask;
-        hole_mask.convertTo(inpaint_mask, CV_8U, 255.0);
-        cv::Mat inpainted_8u;
-        cv::inpaint(depth_norm, inpaint_mask, inpainted_8u, 3.0, cv::INPAINT_TELEA);
-
-        cv::Mat inpainted_f;
-        inpainted_8u.convertTo(inpainted_f, CV_32F, 1.0 / 255.0);
-        inpainted_f = inpainted_f * static_cast<float>(maxVal - minVal) + static_cast<float>(minVal);
-        inpainted_f.copyTo(depth_image, hole_mask);
-      }
-    }
-    EASY_END_BLOCK;
-  }
-
-  // Step 3: Gaussian smoothing to reduce noise and sharpen transitions.
-  // Runs last so it blends both interpolated and original pixels uniformly.
-  if (image_postprocess_enable_ && image_smoothing_enable_ && image_smoothing_kernel_size_ > 1) {
-    EASY_BLOCK("Depth::GaussianSmooth", profiler::colors::LightBlue);
-    cv::GaussianBlur(depth_image,
-                     depth_image,
-                     cv::Size(image_smoothing_kernel_size_, image_smoothing_kernel_size_),
-                     0.0,
-                     0.0,
-                     cv::BORDER_REPLICATE);
-    EASY_END_BLOCK;
-  }
-}
-
-inline void SourceDriver::PostProcessIntensityImage(cv::Mat& intensity_image, const cv::Mat& depth_image_ref) const
-{
-  EASY_FUNCTION(profiler::colors::Green);
-  if (intensity_image.empty() || intensity_image.type() != CV_8UC1) {
-    return;
-  }
-
-  // Step 1: Iterative box-filter to fill small holes from neighboring valid pixels.
-  if (image_postprocess_enable_ && image_interpolation_enable_ && image_interpolation_iterations_ > 0) {
-    EASY_BLOCK("Intensity::BoxFilter", profiler::colors::Teal);
-    cv::Mat valid_mask;
-    if (!depth_image_ref.empty() && depth_image_ref.type() == CV_32FC1 && depth_image_ref.size() == intensity_image.size()) {
-      valid_mask = depth_image_ref > 0.0f;
-    } else {
-      valid_mask = intensity_image > 0;
-    }
-
-    cv::Mat intensity_float;
-    intensity_image.convertTo(intensity_float, CV_32F);
-    cv::Mat valid_float;
-    cv::Mat intensity_sum;
-    cv::Mat valid_count;
-    cv::Mat missing_mask;
-    cv::Mat fillable_mask;
-    cv::Mat intensity_avg;
-    const cv::Size kernel(image_interpolation_kernel_size_, image_interpolation_kernel_size_);
-
-    for (int iter = 0; iter < image_interpolation_iterations_; ++iter) {
-      valid_mask.convertTo(valid_float, CV_32F, 1.0 / 255.0);
-      cv::boxFilter(intensity_float, intensity_sum, CV_32F, kernel, cv::Point(-1, -1), true, cv::BORDER_REPLICATE);
-      cv::boxFilter(valid_float, valid_count, CV_32F, kernel, cv::Point(-1, -1), true, cv::BORDER_REPLICATE);
-
-      cv::compare(valid_mask, 0, missing_mask, cv::CMP_EQ);
-      cv::compare(valid_count, 0.0f, fillable_mask, cv::CMP_GT);
-      cv::bitwise_and(missing_mask, fillable_mask, fillable_mask);
-
-      if (cv::countNonZero(fillable_mask) == 0) {
-        break;
-      }
-
-      cv::divide(intensity_sum, valid_count + 1e-6f, intensity_avg);
-      intensity_avg.copyTo(intensity_float, fillable_mask);
-      valid_mask.setTo(255, fillable_mask);
-    }
-
-    intensity_float.convertTo(intensity_image, CV_8U);
-    EASY_END_BLOCK;
-  }
-
-  // Step 2: Inpainting restricted to holes adjacent to valid data.
-  if (image_postprocess_enable_ && image_interpolation_enable_) {
-    EASY_BLOCK("Intensity::Inpaint", profiler::colors::Pink);
-    cv::Mat valid_mask;
-    cv::compare(intensity_image, 0, valid_mask, cv::CMP_GT);
-    cv::Mat near_valid;
-    cv::dilate(valid_mask, near_valid, cv::Mat(), cv::Point(-1, -1), 5);
-    cv::Mat hole_mask;
-    cv::Mat all_holes;
-    cv::compare(intensity_image, 0, all_holes, cv::CMP_EQ);
-    cv::bitwise_and(all_holes, near_valid, hole_mask);
-    if (cv::countNonZero(hole_mask) > 0) {
-      cv::Mat inpainted;
-      cv::inpaint(intensity_image, hole_mask, inpainted, 3.0, cv::INPAINT_TELEA);
-      inpainted.copyTo(intensity_image, hole_mask);
-    }
-    EASY_END_BLOCK;
-  }
-
-  // Step 3: Gaussian smoothing — runs last so it blends filled and original pixels uniformly.
-  if (image_postprocess_enable_ && image_smoothing_enable_ && image_smoothing_kernel_size_ > 1) {
-    EASY_BLOCK("Intensity::GaussianSmooth", profiler::colors::LightGreen);
-    cv::GaussianBlur(intensity_image,
-                     intensity_image,
-                     cv::Size(image_smoothing_kernel_size_, image_smoothing_kernel_size_),
-                     0.0,
-                     0.0,
-                     cv::BORDER_REPLICATE);
-    EASY_END_BLOCK;
-  }
-}
-
 
 
 inline hesai_ros_driver::msg::UdpPacket SourceDriver::ToRosMsg(const UdpPacket& ros_msg, double timestamp) {
