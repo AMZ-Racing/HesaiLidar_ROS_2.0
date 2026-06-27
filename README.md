@@ -12,6 +12,78 @@ Developed based on [HesaiLidar_SDK_2.0](https://github.com/HesaiTechnology/Hesai
 | Pandar128E3X | -            | -            | -            | -            | -            | -            |
 | Pandar90E3X  | -            | -            | -            | -            | -            | -            |
 
+## AMZ Custom Modifications
+
+This fork extends the upstream Hesai ROS2 driver with depth and intensity image publishing and fixes the depth image layout for ATX, AT128, and OT128. All changes are relative to the upstream [`HesaiLidar_ROS_2.0`](https://github.com/HesaiTechnology/HesaiLidar_ROS_2.0) main branch.
+
+### `src/manager/source_drive_common.hpp` — YAML config parsing
+
+Four new keys added under the `ros:` block in `config.yaml`:
+
+| Key | Type | Default | Description |
+|:----|:-----|:--------|:------------|
+| `send_depth_image_ros` | bool | `false` | Enable depth image publishing |
+| `send_intensity_image_ros` | bool | `false` | Enable intensity image publishing |
+| `ros_send_depth_image_topic` | string | `hesai_depth_image` | Topic name for depth image |
+| `ros_send_intensity_image_topic` | string | `hesai_intensity_image` | Topic name for intensity image |
+
+### `src/manager/source_driver_ros2.hpp` — image publishing
+
+**New publishers:**
+- `depth_img_pub_` — `sensor_msgs/msg/Image`, 32-bit float (`32FC1`), value = distance in metres (0 = no return)
+- `intensity_img_pub_` — `sensor_msgs/msg/Image`, 8-bit mono (`mono8`), value = reflectivity
+
+**New methods:**
+- `SendDepthImg()` / `SendIntensityImg()` — publish helpers called from the frame callback
+- `ToRosDepthImgMsg()` / `ToRosIntensityImgMsg()` — convert `frame.depth_img` / `frame.intensity_img` (populated by the SDK parsers) into stamped `sensor_msgs/msg/Image` messages using the frame's start timestamp
+
+**New config field** (read in `Init()`):
+- `image_flip_vertical` (bool, default `false`) — copies rows bottom-to-top before publishing, so row 0 of the published image is the highest elevation (standard camera convention)
+
+**Remake mode and organized PointCloud2:**
+Enabling either image topic automatically sets `remake_config.flag = true` and `use_ring_remake = true` in the SDK decoder. This has two effects:
+1. The SDK parsers populate `frame.depth_img` and `frame.intensity_img`.
+2. The published PointCloud2 becomes **organized** (`height = max_elev_scan`, `width = max_azi_scan`) instead of a flat unordered cloud. Index `row * width + col` in the cloud corresponds exactly to `depth_img[row][col]`.
+
+**FOV-aware image width:**
+When `fov_start` / `fov_end` are configured in the driver (partial azimuth sweep), `remake_config.min_azi` / `max_azi` are set from the driver FOV and `max_azi_scan` is left as −1 so the SDK derives the column count from the actual range — no empty columns on the right edge.
+
+**Unified frame callback:**
+Point cloud and image publishing are merged into a single `RegRecvCallback` instead of separate callbacks per output type, avoiding redundant frame processing.
+
+### `config/config.yaml` — example configuration
+
+The checked-in `config.yaml` is pre-configured for rosbag playback of ATX data with image publishing enabled:
+
+```yaml
+ros:
+  ros_send_depth_image_topic: /lidar_depth_image
+  ros_send_intensity_image_topic: /lidar_intensity_image
+  send_depth_image_ros: true
+  send_intensity_image_ros: true
+  image_flip_vertical: true   # row 0 = highest elevation (top of visual image)
+```
+
+### SDK submodule changes
+
+The SDK submodule (`src/driver/HesaiLidar_SDK_2.0`) is pinned to a fork that adds `cv::Mat depth_img` / `intensity_img` buffers to `LidarDecodedFrame` and fixes the depth image row layout for ATX, AT128, and OT128. See the [SDK README](src/driver/HesaiLidar_SDK_2.0/README.md) for the full list of changes.
+
+### Pixel ↔ Point mapping
+
+Both images are laid out so that `depth_img[row][col]` corresponds to index `row * cloud.width + col` in the organized ROS2 PointCloud2.
+
+| Sensor | Image size (H × W) | `row` | `col` |
+|:-------|:-------------------|:------|:------|
+| ATX | 116 × 3600 | ring_id 0–115 (interleaved, top→bottom) | azimuth bin at 0.1°/col |
+| AT128 | 128 × 3600 | channel_index 0–127 (top→bottom) | azimuth bin at 0.1°/col |
+| OT128 | 320 × 3600 | elevation bin at 0.125°/row (+15° to −25°) | azimuth bin at 0.1°/col |
+
+**OT128:** `row` is the elevation bin, not the channel index. The `ring` field of each point stores the physical channel (0–127). Rows where no laser fires are zero — check `depth_img[row][col] > 0` before use.
+
+**ATX:** The `ring` field stores the ring_id (0–115), not the raw channel index. See ATX User Manual §A.1.2 for the mapping.
+
+## Setup 
+
 ### Installation dependencies
 
 Install ROS related dependency libraries, please refer to: http://wiki.ros.org
