@@ -95,4 +95,4 @@ lidar:
       send_imu_ros: true                              # true: Send imu through ROS    
       send_intensity_image_ros: true                 # true: Send intensity image through ROS
       send_depth_image_ros: true                     # true: Send depth image through ROS
-      image_flip_vertical: true                      # Flip images vertically for standard orientation
+      image_flip_vertical: false                      # Flip images vertically for standard orientation
