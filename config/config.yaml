@@ -1,10 +1,10 @@
 lidar:
   - driver:
       use_gpu: false
-      source_type: 3                                  # The type of data source, 1: real-time lidar connection, 2: pcap, 3: packet rosbag, 4: serial    
+      source_type: 1                                  # The type of data source, 1: real-time lidar connection, 2: pcap, 3: packet rosbag, 4: serial    
       # Depending on the type of source_type, fill in the corresponding configuration block (lidar_udp_type, pcap_type, serial_type)
       lidar_udp_type:
-        device_ip_address: 192.168.1.201              # host_ip_address. If empty(""), the source ip of the udp point cloud is used
+        device_ip_address: 192.168.5.201              # host_ip_address. If empty(""), the source ip of the udp point cloud is used
         udp_port: 2368                                # UDP destination port
         ptc_port: 9347                                # PTC port of lidar
         multicast_ip_address: 255.255.255.255
@@ -29,18 +29,17 @@ lidar:
         caFile: ""                                    # Represents the path of the CA certificate 
 
       pcap_type:
-        pcap_path: "/workspace/data/outputOT128.pcap"                         # The path of pcap file
-        correction_file_path: "/workspace/data/OT128correction.csv"   # The path of correction file
-        firetimes_path: "/workspace/data/OT128correction_firetime.csv"           # The path of firetimes file
+        pcap_path: "Your pcap file"                         # The path of pcap file
+        correction_file_path: "Your correction file path"   # The path of correction file
+        firetimes_path: "Your firetime file path"           # The path of firetimes file
 
         pcap_play_synchronization: true                     # pcap play rate synchronize with the host time
         pcap_play_in_loop: false
         play_rate_: 1.0                                     # pcap play rate 
       
       rosbag_type:
-        correction_file_path: "/workspace/data/ATX_angle calibration.dat"   # The path of correction file
-        firetimes_path: "/workspace/data/ATX_firetime.dat"            # The path of firetimes file
-        ros_recv_packet_topic: "/lidar_packets"
+        correction_file_path: "Your correction file path"   # The path of correction file
+        firetimes_path: "Your firetime file path"           # The path of firetimes file
 
       serial_type:
         rs485_com: "Your serial port name for receiving point cloud"  # if using JT16, Port to receive the point cloud
@@ -50,26 +49,27 @@ lidar:
         correction_file_path: "Your correction file path"             # The path of correction file
       
       # public module
-      use_timestamp_type: 0                 # 0 use point cloud timestamp; 1 use receive timestamp
+      use_timestamp_type: 1                 # 0 use point cloud timestamp; 1 use receive timestamp
       frame_start_azimuth: 0                # Frame azimuth for Pandar128, range from 1 to 359, set it less than 0 if you do not want to use it      
       # parser thread num
       thread_num: 4
-      # transform param
-      transform_flag: false
-      x: 0
-      y: 0
-      z: 0
+      # transform param, angles in radians
+      # these values have been found by CAD estimates, pitch of -3 degrees
+      transform_flag: true 
+      x: 0.815
+      y: -0.003
+      z: 0.412
       roll: 0
-      pitch: 0
+      pitch: 0.05236
       yaw: 0
       # fov config, [fov_start, fov_end] range [1, 359], [-1, -1]means use default
-      #fov_start: 180
-      #fov_end:  359
-      #channel_fov_filter_path: "Your channel fov filter file path"  # The path of channel_fov_filter file, like channel 0 filter [10, 20] and [30,40]
-      #multi_fov_filter_ranges: "" # compare to channel_fov_filter_path, multi_fov_filter_ranges for all channels. example config "[20,30];[40,200]"
+      fov_start: -1
+      fov_end:  -1
+      channel_fov_filter_path: "Your channel fov filter file path"  # The path of channel_fov_filter file, like channel 0 filter [10, 20] and [30,40]
+      multi_fov_filter_ranges: "" # compare to channel_fov_filter_path, multi_fov_filter_ranges for all channels. example config "[20,30];[40,200]"
       # other config
       enable_packet_loss_tool: true         # enable the udp packet loss detection tool
-      distance_correction_flag: true        # set to true when optical centre correction needs to be turned on
+      distance_correction_flag: false       # set to true when optical centre correction needs to be turned on
       xt_spot_correction: false             # Set to TRUE when XT S point cloud layering correction is required
       device_udp_src_port: 0                # Filter point clouds for specified source ports in case of multiple lidar, setting >=1024
       device_fault_port: 0                  # Filter fault message for specified source ports in case of multiple lidar, setting >=1024
@@ -78,7 +78,7 @@ lidar:
       echo_mode_filter: 0                   # return mode filter
 
     ros:
-      ros_frame_id: hesai_lidar                       # Frame id of packet message and point cloud message
+      ros_frame_id: base_link                       # Frame id of packet message and point cloud message
       ros_recv_packet_topic: /lidar_packets           # Topic used to receive lidar packets from rosbag
       ros_send_packet_topic: /lidar_packets           # Topic used to send lidar raw packets through ROS
       ros_send_point_cloud_topic: /lidar_points       # Topic used to send point cloud through ROS
