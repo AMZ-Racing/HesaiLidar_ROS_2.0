@@ -31,6 +31,7 @@
 #pragma once
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/point_cloud2_iterator.hpp>
+#include <sensor_msgs/msg/image.hpp>
 #include <std_msgs/msg/u_int8_multi_array.hpp>
 #include <sensor_msgs/msg/imu.hpp>
 #include <sstream>
@@ -72,6 +73,10 @@ protected:
   void SendPointCloud(const LidarDecodedFrame<LidarPointXYZIRT>& msg);
   // Used to publish the original packet through 'ros_send_packet_topic'
   void SendPacket(const UdpFrame_t& ros_msg, double timestamp);
+  // Used to publish depth image data through 'ros_send_depth_image_topic'
+  void SendDepthImg(const LidarDecodedFrame<LidarPointXYZIRT>& msg);
+  // Used to publish intensity image data through 'ros_send_intensity_image_topic'
+  void SendIntensityImg(const LidarDecodedFrame<LidarPointXYZIRT>& msg);
 
   // Used to publish the Correction file through 'ros_send_correction_topic'
   void SendCorrection(const u8Array_t& msg);
@@ -99,11 +104,14 @@ protected:
   hesai_ros_driver::msg::UdpPacket ToRosMsg(const UdpPacket& ros_msg, double timestamp);
   // Convert imu, imu into ROS message
   sensor_msgs::msg::Imu ToRosMsg(const LidarImuData& firetime_correction_);
+  sensor_msgs::msg::Image ToRosDepthImgMsg(const LidarDecodedFrame<LidarPointXYZIRT>& frame, const std::string& frame_id);
+  sensor_msgs::msg::Image ToRosIntensityImgMsg(const LidarDecodedFrame<LidarPointXYZIRT>& frame, const std::string& frame_id);
   // Convert Linear Acceleration from g to m/s^2
   // double From_g_To_ms2(double g);
   // Convert Angular Velocity from degree/s to radian/s
   // double From_degs_To_rads(double degree);
   std::string frame_id_;
+  bool image_flip_vertical_ = false;
 
   rclcpp::Subscription<std_msgs::msg::UInt8MultiArray>::SharedPtr crt_sub_;
   rclcpp::Subscription<hesai_ros_driver::msg::UdpFrame>::SharedPtr pkt_sub_;
@@ -114,6 +122,8 @@ protected:
   rclcpp::Publisher<hesai_ros_driver::msg::LossPacket>::SharedPtr loss_pub_;
   rclcpp::Publisher<hesai_ros_driver::msg::Ptp>::SharedPtr ptp_pub_;
   rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr imu_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr depth_img_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr intensity_img_pub_;
   rclcpp::Publisher<hesai_ros_driver::msg::UdpPacket>::SharedPtr every_pkt_pub_;
 
   //spin thread while Receive data from ROS topic
@@ -136,6 +146,12 @@ inline void SourceDriver::Init(const YAML::Node& config)
       imu_queue_size = 200;
     }
     imu_pub_ = node_ptr_->create_publisher<sensor_msgs::msg::Imu>(driver_param.input_param.ros_send_imu_topic, imu_queue_size);
+  }
+  if (driver_param.input_param.send_depth_image_ros) {
+    depth_img_pub_ = node_ptr_->create_publisher<sensor_msgs::msg::Image>(driver_param.input_param.ros_send_depth_image_topic, 10);
+  }
+  if (driver_param.input_param.send_intensity_image_ros) {
+    intensity_img_pub_ = node_ptr_->create_publisher<sensor_msgs::msg::Image>(driver_param.input_param.ros_send_intensity_image_topic, 10);
   }
 
   if (driver_param.input_param.ros_send_packet_loss_topic != NULL_TOPIC) {
@@ -173,10 +189,37 @@ inline void SourceDriver::Init(const YAML::Node& config)
   }
   driver_ptr_.reset(new HesaiLidarSdk<LidarPointXYZIRT>());
   driver_param.decoder_param.enable_parser_thread = true;
-  if (driver_param.input_param.send_point_cloud_ros) {
-    driver_ptr_->RegRecvCallback([this](const hesai::lidar::LidarDecodedFrame<hesai::lidar::LidarPointXYZIRT>& frame) {  
-      this->SendPointCloud(frame);  
-    });  
+  const bool send_point_cloud_ros = driver_param.input_param.send_point_cloud_ros;
+  const bool send_depth_image_ros = driver_param.input_param.send_depth_image_ros;
+  const bool send_intensity_image_ros = driver_param.input_param.send_intensity_image_ros;
+  YamlRead<bool>(config["ros"], "image_flip_vertical", image_flip_vertical_, true);
+
+  if (send_depth_image_ros || send_intensity_image_ros) {
+    // Depth/intensity image buffers are only produced when remake mode is enabled.
+    auto& remake_cfg = driver_param.decoder_param.remake_config;
+    remake_cfg.flag = true;
+    remake_cfg.use_ring_remake = true;
+    if (driver_param.decoder_param.fov_start != -1 &&
+        driver_param.decoder_param.fov_end != -1 &&
+        driver_param.decoder_param.fov_end > driver_param.decoder_param.fov_start) {
+      remake_cfg.min_azi = static_cast<float>(driver_param.decoder_param.fov_start);
+      remake_cfg.max_azi = static_cast<float>(driver_param.decoder_param.fov_end);
+      remake_cfg.max_azi_scan = -1;
+    }
+  }
+  if (send_point_cloud_ros || send_depth_image_ros || send_intensity_image_ros) {
+    driver_ptr_->RegRecvCallback([this, send_point_cloud_ros, send_depth_image_ros, send_intensity_image_ros](
+                                     const hesai::lidar::LidarDecodedFrame<hesai::lidar::LidarPointXYZIRT>& frame) {
+      if (send_point_cloud_ros && pub_) {
+        this->SendPointCloud(frame);
+      }
+      if (send_depth_image_ros && depth_img_pub_) {
+        this->SendDepthImg(frame);
+      }
+      if (send_intensity_image_ros && intensity_img_pub_) {
+        this->SendIntensityImg(frame);
+      }
+    });
   }
   if (driver_param.input_param.send_imu_ros) {
     driver_ptr_->RegRecvCallback(std::bind(&SourceDriver::SendImuConfig, this, std::placeholders::_1));
@@ -230,6 +273,16 @@ inline void SourceDriver::SendPointCloud(const LidarDecodedFrame<LidarPointXYZIR
   pub_->publish(ToRosMsg(msg, frame_id_));
 }
 
+inline void SourceDriver::SendDepthImg(const LidarDecodedFrame<LidarPointXYZIRT>& msg)
+{
+  depth_img_pub_->publish(ToRosDepthImgMsg(msg, frame_id_));
+}
+
+inline void SourceDriver::SendIntensityImg(const LidarDecodedFrame<LidarPointXYZIRT>& msg)
+{
+  intensity_img_pub_->publish(ToRosIntensityImgMsg(msg, frame_id_));
+}
+
 inline void SourceDriver::SendCorrection(const u8Array_t& msg)
 {
   crt_pub_->publish(ToRosMsg(msg));
@@ -267,8 +320,17 @@ inline sensor_msgs::msg::PointCloud2 SourceDriver::ToRosMsg(const LidarDecodedFr
   int fields = 6;
   ros_msg.fields.clear();
   ros_msg.fields.reserve(fields);
-  ros_msg.width = points_number; 
-  ros_msg.height = 1; 
+  const auto& rc = frame.fParam.remake_config;
+  if (rc.flag && rc.use_ring_remake) {
+    // Organized cloud: height=rings (rows), width=azimuth columns.
+    // pixel (row, col) in depth/intensity image == cloud point at (row, col).
+    // frame.points is col-major [col * max_elev_scan + row]; transposed to row-major here.
+    ros_msg.height = static_cast<uint32_t>(rc.max_elev_scan);
+    ros_msg.width = static_cast<uint32_t>(rc.max_azi_scan);
+  } else {
+    ros_msg.height = 1;
+    ros_msg.width = points_number;
+  }
 
   int offset = 0;
   offset = addPointField(ros_msg, "x", 1, sensor_msgs::msg::PointField::FLOAT32, offset);
@@ -281,7 +343,7 @@ inline sensor_msgs::msg::PointCloud2 SourceDriver::ToRosMsg(const LidarDecodedFr
   ros_msg.point_step = offset;
   ros_msg.row_step = ros_msg.width * ros_msg.point_step;
   ros_msg.is_dense = false;
-  ros_msg.data.resize(points_number * ros_msg.point_step);
+  ros_msg.data.resize(static_cast<size_t>(ros_msg.height) * ros_msg.row_step);
 
   sensor_msgs::PointCloud2Iterator<float> iter_x_(ros_msg, "x");
   sensor_msgs::PointCloud2Iterator<float> iter_y_(ros_msg, "y");
@@ -289,24 +351,117 @@ inline sensor_msgs::msg::PointCloud2 SourceDriver::ToRosMsg(const LidarDecodedFr
   sensor_msgs::PointCloud2Iterator<float> iter_intensity_(ros_msg, "intensity");
   sensor_msgs::PointCloud2Iterator<uint16_t> iter_ring_(ros_msg, "ring");
   sensor_msgs::PointCloud2Iterator<double> iter_timestamp_(ros_msg, "timestamp");
-  for (size_t i = 0; i < points_number; i++)
-  {
-    LidarPointXYZIRT point = pPoints[i];
-    *iter_x_ = point.x;
-    *iter_y_ = point.y;
-    *iter_z_ = point.z;
-    *iter_intensity_ = point.intensity;
-    *iter_ring_ = point.ring;
-    *iter_timestamp_ = point.timestamp;
-    ++iter_x_;
-    ++iter_y_;
-    ++iter_z_;
-    ++iter_intensity_;
-    ++iter_ring_;
-    ++iter_timestamp_;   
+  if (rc.flag && rc.use_ring_remake) {
+    // Transpose: frame stores col-major [col * max_elev_scan + row], ROS organized is row-major [row * max_azi_scan + col].
+    for (int row = 0; row < rc.max_elev_scan; row++) {
+      for (int col = 0; col < rc.max_azi_scan; col++) {
+        const LidarPointXYZIRT& point = pPoints[col * rc.max_elev_scan + row];
+        *iter_x_ = point.x;
+        *iter_y_ = point.y;
+        *iter_z_ = point.z;
+        *iter_intensity_ = point.intensity;
+        *iter_ring_ = point.ring;
+        *iter_timestamp_ = point.timestamp;
+        ++iter_x_;
+        ++iter_y_;
+        ++iter_z_;
+        ++iter_intensity_;
+        ++iter_ring_;
+        ++iter_timestamp_;
+      }
+    }
+  } else {
+    for (size_t i = 0; i < points_number; i++) {
+      const LidarPointXYZIRT& point = pPoints[i];
+      *iter_x_ = point.x;
+      *iter_y_ = point.y;
+      *iter_z_ = point.z;
+      *iter_intensity_ = point.intensity;
+      *iter_ring_ = point.ring;
+      *iter_timestamp_ = point.timestamp;
+      ++iter_x_;
+      ++iter_y_;
+      ++iter_z_;
+      ++iter_intensity_;
+      ++iter_ring_;
+      ++iter_timestamp_;
+    }
   }
   // printf("HesaiLidar Runing Status [standby mode:%u]  |  [speed:%u]\n", frame.work_mode, frame.spin_speed);
   printf("%s frame:%d points:%u packet:%d start time:%lf end time:%lf\n", prefix, frame_index, points_number, packet_number, frame_start_timestamp, frame_end_timestamp) ;
+  std::cout.flush();
+  auto sec = (uint64_t)floor(frame_start_timestamp);
+  if (sec <= std::numeric_limits<int32_t>::max()) {
+    ros_msg.header.stamp.sec = (uint32_t)floor(frame_start_timestamp);
+    ros_msg.header.stamp.nanosec = (uint32_t)round((frame_start_timestamp - ros_msg.header.stamp.sec) * 1e9);
+  } else {
+    printf("does not support timestamps greater than 19 January 2038 03:14:07 (now %lf)\n", frame_start_timestamp);
+  }
+  ros_msg.header.frame_id = frame_id_;
+  return ros_msg;
+}
+
+inline sensor_msgs::msg::Image SourceDriver::ToRosDepthImgMsg(const LidarDecodedFrame<LidarPointXYZIRT>& frame, const std::string& frame_id)
+{
+  sensor_msgs::msg::Image ros_msg;
+  int frame_index = (frame.fParam.IsMultiFrameFrequency() == 0) ? frame.frame_index : frame.multi_frame_index;
+  double frame_start_timestamp = (frame.fParam.IsMultiFrameFrequency() == 0) ? frame.frame_start_timestamp : frame.multi_frame_start_timestamp;
+  double frame_end_timestamp = (frame.fParam.IsMultiFrameFrequency() == 0) ? frame.frame_end_timestamp : frame.multi_frame_end_timestamp;
+  const char *prefix = (frame.fParam.IsMultiFrameFrequency() == 0) ? "raw" : "multi";
+
+  // Clone to avoid modifying the shared frame data (cv::Mat copy is shallow).
+  cv::Mat depth_image = frame.depth_img.clone();
+  ros_msg.height = static_cast<uint32_t>(depth_image.rows);
+  ros_msg.width = static_cast<uint32_t>(depth_image.cols);
+  ros_msg.step = ros_msg.width * static_cast<uint32_t>(sizeof(float));
+  ros_msg.encoding = "32FC1";
+  ros_msg.is_bigendian = false;
+  ros_msg.data.resize(static_cast<size_t>(ros_msg.height) * ros_msg.step);
+  if (!depth_image.empty() && ros_msg.width > 0) {
+    const size_t row_bytes = static_cast<size_t>(ros_msg.step);
+    for (uint32_t out_row = 0; out_row < ros_msg.height; ++out_row) {
+      uint32_t src_row = image_flip_vertical_ ? (ros_msg.height - 1 - out_row) : out_row;
+      const uint8_t *src_ptr = reinterpret_cast<const uint8_t *>(depth_image.ptr(static_cast<int>(src_row)));
+      memcpy(ros_msg.data.data() + static_cast<size_t>(out_row) * row_bytes, src_ptr, row_bytes);
+    }
+  }
+  printf("%s frame:%d start time:%lf end time:%lf\n", prefix, frame_index, frame_start_timestamp, frame_end_timestamp);
+  std::cout.flush();
+  auto sec = (uint64_t)floor(frame_start_timestamp);
+  if (sec <= std::numeric_limits<int32_t>::max()) {
+    ros_msg.header.stamp.sec = (uint32_t)floor(frame_start_timestamp);
+    ros_msg.header.stamp.nanosec = (uint32_t)round((frame_start_timestamp - ros_msg.header.stamp.sec) * 1e9);
+  } else {
+    printf("does not support timestamps greater than 19 January 2038 03:14:07 (now %lf)\n", frame_start_timestamp);
+  }
+  ros_msg.header.frame_id = frame_id_;
+  return ros_msg;
+}
+
+inline sensor_msgs::msg::Image SourceDriver::ToRosIntensityImgMsg(const LidarDecodedFrame<LidarPointXYZIRT>& frame, const std::string& frame_id)
+{
+  sensor_msgs::msg::Image ros_msg;
+  int frame_index = (frame.fParam.IsMultiFrameFrequency() == 0) ? frame.frame_index : frame.multi_frame_index;
+  double frame_start_timestamp = (frame.fParam.IsMultiFrameFrequency() == 0) ? frame.frame_start_timestamp : frame.multi_frame_start_timestamp;
+  double frame_end_timestamp = (frame.fParam.IsMultiFrameFrequency() == 0) ? frame.frame_end_timestamp : frame.multi_frame_end_timestamp;
+  const char *prefix = (frame.fParam.IsMultiFrameFrequency() == 0) ? "raw" : "multi";
+
+  // Clone to avoid modifying the shared frame data (cv::Mat copy is shallow).
+  cv::Mat intensity_image = frame.intensity_img.clone();
+  ros_msg.height = static_cast<uint32_t>(intensity_image.rows);
+  ros_msg.width = static_cast<uint32_t>(intensity_image.cols);
+  ros_msg.step = ros_msg.width;
+  ros_msg.encoding = "mono8";
+  ros_msg.is_bigendian = false;
+  ros_msg.data.resize(static_cast<size_t>(ros_msg.height) * ros_msg.step);
+  if (!intensity_image.empty() && ros_msg.width > 0) {
+    const size_t row_bytes = static_cast<size_t>(ros_msg.step);
+    for (uint32_t out_row = 0; out_row < ros_msg.height; ++out_row) {
+      uint32_t src_row = image_flip_vertical_ ? (ros_msg.height - 1 - out_row) : out_row;
+      const uint8_t *src_ptr = intensity_image.ptr(static_cast<int>(src_row));
+      memcpy(ros_msg.data.data() + static_cast<size_t>(out_row) * row_bytes, src_ptr, row_bytes);
+    }
+  }
   std::cout.flush();
   auto sec = (uint64_t)floor(frame_start_timestamp);
   if (sec <= std::numeric_limits<int32_t>::max()) {

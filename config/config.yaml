@@ -4,7 +4,7 @@ lidar:
       source_type: 1                                  # The type of data source, 1: real-time lidar connection, 2: pcap, 3: packet rosbag, 4: serial    
       # Depending on the type of source_type, fill in the corresponding configuration block (lidar_udp_type, pcap_type, serial_type)
       lidar_udp_type:
-        device_ip_address: 192.168.1.201              # host_ip_address. If empty(""), the source ip of the udp point cloud is used
+        device_ip_address: 192.168.5.201              # host_ip_address. If empty(""), the source ip of the udp point cloud is used
         udp_port: 2368                                # UDP destination port
         ptc_port: 9347                                # PTC port of lidar
         multicast_ip_address: 255.255.255.255
@@ -49,17 +49,18 @@ lidar:
         correction_file_path: "Your correction file path"             # The path of correction file
       
       # public module
-      use_timestamp_type: 0                 # 0 use point cloud timestamp; 1 use receive timestamp
+      use_timestamp_type: 1                 # 0 use point cloud timestamp; 1 use receive timestamp
       frame_start_azimuth: 0                # Frame azimuth for Pandar128, range from 1 to 359, set it less than 0 if you do not want to use it      
       # parser thread num
       thread_num: 4
-      # transform param
-      transform_flag: false
-      x: 0
-      y: 0
-      z: 0
+      # transform param, angles in radians
+      # these values have been found by CAD estimates, pitch of -3 degrees
+      transform_flag: true 
+      x: 0.815
+      y: -0.003
+      z: 0.412
       roll: 0
-      pitch: 0
+      pitch: 0.05236
       yaw: 0
       # fov config, [fov_start, fov_end] range [1, 359], [-1, -1]means use default
       fov_start: -1
@@ -77,16 +78,21 @@ lidar:
       echo_mode_filter: 0                   # return mode filter
 
     ros:
-      ros_frame_id: hesai_lidar                           # Frame id of packet message and point cloud message
-      ros_recv_packet_topic: /lidar_packets               # Topic used to receive lidar packets from rosbag
-      ros_send_packet_topic: /lidar_packets               # Topic used to send lidar raw packets through ROS
-      ros_send_point_cloud_topic: /lidar_points           # Topic used to send point cloud through ROS
-      ros_send_imu_topic: /lidar_imu                      # Topic used to send lidar imu message
-      ros_send_packet_loss_topic: /lidar_packets_loss     # Topic used to monitor packets loss condition through ROS
-      # ros_recv_correction_topic: /lidar_corrections     # Topic used to receive corrections file from rosbag
-      # ros_send_correction_topic: /lidar_corrections     # Topic used to send correction through ROS
-      # ros_send_ptp_topic: /lidar_ptp                    # Topic used to send PTP lock status, offset through ROS
-      # ros_send_every_packet_topic: /lidar_every_packet  # Topic used to send every packet through ROS
-      send_packet_ros: false                              # true: Send packets through ROS 
-      send_point_cloud_ros: true                          # true: Send point cloud through ROS    
-      send_imu_ros: true                                  # true: Send imu through ROS    
+      ros_frame_id: base_link                       # Frame id of packet message and point cloud message
+      ros_recv_packet_topic: /lidar_packets           # Topic used to receive lidar packets from rosbag
+      ros_send_packet_topic: /lidar_packets           # Topic used to send lidar raw packets through ROS
+      ros_send_point_cloud_topic: /lidar_points       # Topic used to send point cloud through ROS
+      ros_send_imu_topic: /lidar_imu                  # Topic used to send lidar imu message
+      ros_send_packet_loss_topic: /lidar_packets_loss # Topic used to monitor packets loss condition through ROS
+      ros_send_depth_image_topic: /lidar_depth_image   # Topic used to send depth image through ROS
+      ros_send_intensity_image_topic: /lidar_intensity_image # Topic used to send intensity image through ROS
+      # ros_recv_correction_topic: /lidar_corrections # Topic used to receive corrections file from rosbag
+      # ros_send_correction_topic: /lidar_corrections # Topic used to send correction through ROS
+      # ros_send_firetime_topic: /lidar_firetime
+      # ros_send_ptp_topic: /lidar_ptp                # Topic used to send PTP lock status, offset through ROS
+      send_packet_ros: false                          # true: Send packets through ROS 
+      send_point_cloud_ros: true                      # true: Send point cloud through ROS    
+      send_imu_ros: true                              # true: Send imu through ROS    
+      send_intensity_image_ros: true                 # true: Send intensity image through ROS
+      send_depth_image_ros: true                     # true: Send depth image through ROS
+      image_flip_vertical: false                      # Flip images vertically for standard orientation

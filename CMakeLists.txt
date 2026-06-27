@@ -218,7 +218,7 @@ else()
     src/manager/node_manager.cc
     )
 endif()
-target_link_libraries(hesai_ros_driver_node                   
+target_link_libraries(hesai_ros_driver_node
             ${YAML_CPP_LIBRARIES}
             ${Boost_LIBRARIES}
             ${LIB_TARGETS}

@@ -13,11 +13,11 @@ def generate_launch_description():
             output='screen',
             # parameters=[{'config_path': yaml_config}]
         ),
-        Node(
-            package='rviz2',
-            node_namespace='rviz2',
-            node_name='rviz2',
-            node_executable='rviz2',
-            arguments=['-d',rviz_config]
-        )
+        # Node(
+        #     package='rviz2',
+        #     node_namespace='rviz2',
+        #     node_name='rviz2',
+        #     node_executable='rviz2',
+        #     arguments=['-d',rviz_config]
+        # )
     ])
