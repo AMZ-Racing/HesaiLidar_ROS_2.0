@@ -46,7 +46,9 @@
 #include <chrono>
 #include <string>
 #include <functional>
-#include <algorithm> 
+#include <algorithm>
+#include <filesystem>
+#include <iomanip>
 #include <easy/profiler.h>
 #include <boost/thread.hpp>
 #include "source_drive_common.hpp"
@@ -259,7 +261,13 @@ inline void SourceDriver::Start()
 
 inline SourceDriver::~SourceDriver()
 {
-  profiler::dumpBlocksToFile("/tmp/hesai_profile.prof");
+  auto now = std::chrono::system_clock::now();
+  auto t = std::chrono::system_clock::to_time_t(now);
+  std::ostringstream ss;
+  ss << std::put_time(std::localtime(&t), "%Y%m%d_%H%M%S");
+  std::filesystem::create_directories("profiler");
+  std::string path = "profiler/hesai_" + ss.str() + ".prof";
+  profiler::dumpBlocksToFile(path.c_str());
   Stop();
 }
 
